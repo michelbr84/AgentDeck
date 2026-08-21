@@ -179,6 +179,7 @@ export PATH="$USER_BIN_DIR:$AGENTDECK_HOME/bin:$PATH"
 for RC_FILE in "$HOME/.bashrc" "$HOME/.zshrc" "$HOME/.profile"; do
   if [ -f "$RC_FILE" ]; then
     if ! grep -q '\.agentdeck/bin\|\.local/bin' "$RC_FILE"; then
+      # shellcheck disable=SC2016
       echo 'export PATH="$HOME/.local/bin:$HOME/.agentdeck/bin:$PATH"' >> "$RC_FILE"
     fi
   fi
