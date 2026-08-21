@@ -54,12 +54,12 @@ delete pkg.devDependencies;
 fs.writeFileSync("'"$BUNDLE_STAGE_DIR"'/package.json", JSON.stringify(pkg, null, 2));
 '
 
-# 2. Bundle internal workspace packages under lib/@agentdeck
-mkdir -p "$BUNDLE_STAGE_DIR/lib/@agentdeck"
+# 2. Bundle internal workspace packages under bundle_modules/@agentdeck
+mkdir -p "$BUNDLE_STAGE_DIR/bundle_modules/@agentdeck"
 
 for pkg in protocol security database adapter-sdk adapters core shared server; do
   PKG_DIR="$ROOT_DIR/packages/$pkg"
-  STAGE_PKG_DIR="$BUNDLE_STAGE_DIR/lib/@agentdeck/$pkg"
+  STAGE_PKG_DIR="$BUNDLE_STAGE_DIR/bundle_modules/@agentdeck/$pkg"
   mkdir -p "$STAGE_PKG_DIR"
   node -e '
   const fs = require("fs");
@@ -80,7 +80,7 @@ for pkg in protocol security database adapter-sdk adapters core shared server; d
 done
 
 # Create release tarball for CLI
-tar -czf "$DIST_DIR/agentdeck-cli.tar.gz" -C "$BUNDLE_STAGE_DIR" package.json dist lib
+tar -czf "$DIST_DIR/agentdeck-cli.tar.gz" -C "$BUNDLE_STAGE_DIR" package.json dist bundle_modules
 
 # Clean up stage
 rm -rf "$BUNDLE_STAGE_DIR"

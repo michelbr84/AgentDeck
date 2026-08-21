@@ -69,7 +69,7 @@ fi
 echo -e "${GREEN}✓ Node.js $(node -v) is ready${NC}"
 
 # Verify essential utilities
-for util in curl tar; do
+for util in curl tar cp; do
   if ! command -v "$util" >/dev/null 2>&1; then
     echo -e "${RED}Error: Required utility '$util' is not installed.${NC}"
     exit 1
@@ -151,17 +151,10 @@ echo "Installing production runtime dependencies..."
 cd "$APP_DIR"
 npm install --omit=dev --silent --no-audit --no-fund
 
-# Link internal @agentdeck packages into node_modules
-if [ -d "$APP_DIR/lib/@agentdeck" ]; then
+# Copy internal bundled @agentdeck packages into node_modules
+if [ -d "$APP_DIR/bundle_modules/@agentdeck" ]; then
   mkdir -p "$APP_DIR/node_modules/@agentdeck"
-  for pkg_dir in "$APP_DIR"/lib/@agentdeck/*; do
-    if [ -d "$pkg_dir" ]; then
-      pkg_name="$(basename "$pkg_dir")"
-      target_link="$APP_DIR/node_modules/@agentdeck/$pkg_name"
-      rm -rf "$target_link"
-      ln -sf "$pkg_dir" "$target_link"
-    fi
-  done
+  cp -r "$APP_DIR"/bundle_modules/@agentdeck/* "$APP_DIR/node_modules/@agentdeck/"
 fi
 
 # Create executable wrapper script in ~/.agentdeck/bin and ~/.local/bin
