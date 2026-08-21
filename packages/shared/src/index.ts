@@ -29,6 +29,12 @@ export const AGENTDECK_PATHS = {
   get PERSONAS_DIR() {
     return path.join(this.HOME_DIR, 'personas');
   },
+  get APP_DIR() {
+    return path.join(this.HOME_DIR, 'app');
+  },
+  get WEB_DIST_DIR() {
+    return path.join(this.APP_DIR, 'web', 'dist');
+  },
 };
 
 export const DEFAULT_SERVER_PORT = 4321;

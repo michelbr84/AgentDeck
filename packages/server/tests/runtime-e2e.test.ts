@@ -12,7 +12,7 @@ describe('AgentDeck Full Runtime & E2E Acceptance Suite', () => {
   let engine: MultiAgentOrchestrationEngine;
   let composer: PromptComposer;
   let server: FastifyInstance;
-  const TEST_PORT = 4321;
+  const TEST_PORT = 4323;
   const TEST_TOKEN = 'test-sec-auth-token-999';
 
   beforeAll(async () => {

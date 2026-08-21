@@ -153,4 +153,46 @@ describe('@agentdeck/server REST API & WebSocket server test suite', () => {
     await server.close();
     db.close();
   });
+
+  it('should serve Web Deck static bundle and SPA fallback routes', async () => {
+    const db = new AgentDeckDatabase({ dbPath: ':memory:', inMemory: true });
+    await db.migrate();
+    const manager = AgentDeckManager.createWithDatabase(db);
+    const server = await createAgentDeckServer({ port: 0, manager });
+
+    expect(server.webRoot).toBeDefined();
+    expect(server.webRoot).not.toBeNull();
+
+    // 1. GET / -> index.html (200)
+    const rootRes = await server.inject({
+      method: 'GET',
+      url: '/',
+    });
+    expect(rootRes.statusCode).toBe(200);
+    expect(rootRes.headers['content-type']).toContain('text/html');
+    expect(rootRes.body).toContain('AgentDeck');
+    expect(rootRes.body).toContain('<div id="root">');
+
+    // 2. SPA client-side route fallback -> index.html (200)
+    const spaRes = await server.inject({
+      method: 'GET',
+      url: '/personas/create',
+    });
+    expect(spaRes.statusCode).toBe(200);
+    expect(spaRes.headers['content-type']).toContain('text/html');
+    expect(spaRes.body).toContain('<div id="root">');
+
+    // 3. API route 404 returns JSON 404, not HTML
+    const api404Res = await server.inject({
+      method: 'GET',
+      url: '/api/v1/nonexistent',
+    });
+    expect(api404Res.statusCode).toBe(404);
+    expect(api404Res.headers['content-type']).toContain('application/json');
+    const api404 = JSON.parse(api404Res.body);
+    expect(api404.statusCode).toBe(404);
+
+    await server.close();
+    db.close();
+  });
 });

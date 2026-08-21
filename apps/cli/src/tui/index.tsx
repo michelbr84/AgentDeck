@@ -83,7 +83,7 @@ export const TuiApp: React.FC<TuiOptions> = ({ initialView = 'dashboard', initia
       {/* Header Bar */}
       <Box justifyContent="space-between" marginBottom={1}>
         <Text bold color="cyanBright">
-          ▲ AgentDeck v1.0 [Multi-Agent Terminal Deck]
+          ▲ AgentDeck v1.0.1 [Multi-Agent Terminal Deck]
         </Text>
         <Text dimColor>
           [Ctrl+1: Dashboard | Ctrl+2: Agents | Ctrl+3: Rooms | Ctrl+4: Chat | Ctrl+5: Docs | ESC: Exit]

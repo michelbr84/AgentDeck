@@ -13,7 +13,7 @@ RED='\033[0;31m'
 NC='\033[0m'
 
 REPO="michelbr84/AgentDeck"
-FALLBACK_VERSION="v1.0.0"
+FALLBACK_VERSION="v1.0.1"
 
 echo -e "${CYAN}"
 echo "  █████╗  ██████╗ ███████╗███╗   ██╗████████╗██████╗ ███████╗ ██████╗██╗  ██╗"
@@ -114,38 +114,55 @@ trap 'rm -rf "$TMP_DIR"' EXIT
 
 DOWNLOAD_BASE="https://github.com/${REPO}/releases/download/${VERSION}"
 CLI_TARBALL_URL="${DOWNLOAD_BASE}/agentdeck-cli.tar.gz"
+WEB_TARBALL_URL="${DOWNLOAD_BASE}/agentdeck-web.tar.gz"
 CHECKSUMS_URL="${DOWNLOAD_BASE}/checksums.txt"
 
 echo "Downloading ${CLI_TARBALL_URL}..."
 curl -fsSL -o "$TMP_DIR/agentdeck-cli.tar.gz" "$CLI_TARBALL_URL"
 
+echo "Downloading ${WEB_TARBALL_URL}..."
+curl -fsSL -o "$TMP_DIR/agentdeck-web.tar.gz" "$WEB_TARBALL_URL"
+
 echo "Downloading ${CHECKSUMS_URL}..."
 curl -fsSL -o "$TMP_DIR/checksums.txt" "$CHECKSUMS_URL"
 
-echo "Verifying SHA-256 checksum..."
+echo "Verifying SHA-256 checksums..."
 cd "$TMP_DIR"
-EXPECTED_HASH=$(grep "agentdeck-cli.tar.gz" checksums.txt | awk '{print $1}')
+EXPECTED_CLI_HASH=$(grep "agentdeck-cli.tar.gz" checksums.txt | awk '{print $1}')
+EXPECTED_WEB_HASH=$(grep "agentdeck-web.tar.gz" checksums.txt | awk '{print $1}')
 
 if command -v sha256sum >/dev/null 2>&1; then
-  ACTUAL_HASH=$(sha256sum agentdeck-cli.tar.gz | awk '{print $1}')
+  ACTUAL_CLI_HASH=$(sha256sum agentdeck-cli.tar.gz | awk '{print $1}')
+  ACTUAL_WEB_HASH=$(sha256sum agentdeck-web.tar.gz | awk '{print $1}')
 elif command -v shasum >/dev/null 2>&1; then
-  ACTUAL_HASH=$(shasum -a 256 agentdeck-cli.tar.gz | awk '{print $1}')
+  ACTUAL_CLI_HASH=$(shasum -a 256 agentdeck-cli.tar.gz | awk '{print $1}')
+  ACTUAL_WEB_HASH=$(shasum -a 256 agentdeck-web.tar.gz | awk '{print $1}')
 else
   echo -e "${RED}Error: Neither sha256sum nor shasum is available for checksum verification.${NC}"
   exit 1
 fi
 
-if [ -z "$EXPECTED_HASH" ] || [ "$EXPECTED_HASH" != "$ACTUAL_HASH" ]; then
-  echo -e "${RED}Error: SHA-256 checksum mismatch!${NC}"
-  echo -e "Expected: $EXPECTED_HASH"
-  echo -e "Actual:   $ACTUAL_HASH"
+if [ -z "$EXPECTED_CLI_HASH" ] || [ "$EXPECTED_CLI_HASH" != "$ACTUAL_CLI_HASH" ]; then
+  echo -e "${RED}Error: CLI SHA-256 checksum mismatch!${NC}"
+  echo -e "Expected: $EXPECTED_CLI_HASH"
+  echo -e "Actual:   $ACTUAL_CLI_HASH"
   exit 1
 fi
-echo -e "${GREEN}✓ Checksum verified successfully (${ACTUAL_HASH})${NC}"
+
+if [ -z "$EXPECTED_WEB_HASH" ] || [ "$EXPECTED_WEB_HASH" != "$ACTUAL_WEB_HASH" ]; then
+  echo -e "${RED}Error: Web SHA-256 checksum mismatch!${NC}"
+  echo -e "Expected: $EXPECTED_WEB_HASH"
+  echo -e "Actual:   $ACTUAL_WEB_HASH"
+  exit 1
+fi
+echo -e "${GREEN}✓ Checksums verified successfully (CLI & Web Deck)${NC}"
 
 APP_DIR="$AGENTDECK_HOME/app"
 rm -rf "${APP_DIR:?}"/*
 tar -xzf "$TMP_DIR/agentdeck-cli.tar.gz" -C "$APP_DIR"
+
+mkdir -p "$APP_DIR/web"
+tar -xzf "$TMP_DIR/agentdeck-web.tar.gz" -C "$APP_DIR/web"
 
 echo "Installing production runtime dependencies..."
 cd "$APP_DIR"
@@ -186,7 +203,7 @@ for RC_FILE in "$HOME/.bashrc" "$HOME/.zshrc" "$HOME/.profile"; do
 done
 
 # 5. Verify Installation
-echo -e "${YELLOW}[5/5] Verifying installed binary...${NC}"
+echo -e "${YELLOW}[5/5] Verifying installed binary & web bundle...${NC}"
 
 if ! command -v agentdeck >/dev/null 2>&1; then
   # Try explicit paths if PATH hasn't reloaded
@@ -208,7 +225,14 @@ if [ -z "$INSTALLED_VERSION" ] || [[ "$INSTALLED_VERSION" == *"Error"* ]] || [[ 
   exit 1
 fi
 
+# Verify Web Deck bundle
+if [ ! -f "$APP_DIR/web/dist/index.html" ]; then
+  echo -e "${RED}Error: Web Deck static bundle not found at $APP_DIR/web/dist/index.html${NC}"
+  exit 1
+fi
+
 echo -e "${GREEN}✓ AgentDeck binary verified: version ${INSTALLED_VERSION}${NC}"
+echo -e "${GREEN}✓ Web Deck static bundle verified: ready${NC}"
 
 echo -e "\n${GREEN}======================================================${NC}"
 echo -e "${GREEN}🎉 AgentDeck has been successfully installed!${NC}"

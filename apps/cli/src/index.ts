@@ -14,7 +14,7 @@ const program = new Command();
 program
   .name('agentdeck')
   .description('Universal multi-agent manager, group chat deck, and orchestrator for Linux & Web')
-  .version('1.0.0');
+  .version('1.0.1');
 
 // 1. SETUP / ONBOARDING WIZARD
 program
@@ -240,6 +240,7 @@ program
   .option('--host <host>', 'Host to bind to', '127.0.0.1')
   .option('--lan', 'Allow local area network connections (0.0.0.0)')
   .option('--token <secret>', 'Mandatory authentication token for API and WebSocket')
+  .option('--web-root <path>', 'Custom directory containing Web Deck static production build')
   .action(async (options) => {
     const port = parseInt(options.port, 10) || 4321;
     const server = await createAgentDeckServer({
@@ -247,10 +248,21 @@ program
       host: options.host,
       allowLan: !!options.lan,
       authToken: options.token,
+      webRoot: options.webRoot,
     });
 
-    await server.listen({ port, host: options.lan ? '0.0.0.0' : options.host || '127.0.0.1' });
-    console.log(chalk.bold.green(`\n🚀 AgentDeck Web Daemon running at http://${options.lan ? '0.0.0.0' : options.host || '127.0.0.1'}:${port}`));
+    if (!server.webRoot) {
+      console.error(chalk.red('\n✖ Web UI bundle not found.'));
+      console.error(chalk.yellow('Reinstall AgentDeck or run `pnpm --filter agentdeck-web build` if running from source.\n'));
+      process.exit(1);
+    }
+
+    const bindHost = options.lan ? '0.0.0.0' : options.host || '127.0.0.1';
+    await server.listen({ port, host: bindHost });
+    console.log(chalk.bold.green(`\n🚀 AgentDeck Web Deck running at http://${bindHost}:${port}`));
+    console.log(chalk.green('  ✓ Web UI: ready'));
+    console.log(chalk.green('  ✓ REST API: ready'));
+    console.log(chalk.green('  ✓ WebSocket: ready'));
     if (options.token) {
       console.log(chalk.yellow(`🔒 Authentication token required: ${options.token}`));
     }

@@ -1,10 +1,16 @@
 import Fastify, { FastifyInstance } from 'fastify';
 import cors from '@fastify/cors';
 import fastifyWebsocket from '@fastify/websocket';
+import fastifyStatic from '@fastify/static';
+import path from 'node:path';
+import fs from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { AgentDeckManager, MultiAgentOrchestrationEngine } from '@agentdeck/core';
 import { redactSecrets, timingSafeEqual } from '@agentdeck/security';
+import { AGENTDECK_PATHS } from '@agentdeck/shared';
 import type { Persona, RoomMode } from '@agentdeck/protocol';
 import { WebSocket } from 'ws';
+export { WebSocket } from 'ws';
 
 export interface ServerOptions {
   port?: number;
@@ -12,12 +18,51 @@ export interface ServerOptions {
   authToken?: string;
   allowLan?: boolean;
   manager?: AgentDeckManager;
+  webRoot?: string;
 }
 
-export async function createAgentDeckServer(options?: ServerOptions): Promise<FastifyInstance> {
+export function resolveWebRoot(customWebRoot?: string): string | null {
+  if (customWebRoot && fs.existsSync(customWebRoot) && fs.existsSync(path.join(customWebRoot, 'index.html'))) {
+    return path.resolve(customWebRoot);
+  }
+
+  // 1. Check relative to ~/.agentdeck/app/web/dist (production installer layout)
+  if (fs.existsSync(AGENTDECK_PATHS.WEB_DIST_DIR) && fs.existsSync(path.join(AGENTDECK_PATHS.WEB_DIST_DIR, 'index.html'))) {
+    return path.resolve(AGENTDECK_PATHS.WEB_DIST_DIR);
+  }
+
+  // 2. Check relative to CLI or Server module location in bundle/install layout
+  try {
+    const currentFile = fileURLToPath(import.meta.url);
+    const currentDir = path.dirname(currentFile);
+    // e.g. dist/index.js -> ../web/dist or ../../web/dist or ../../apps/web/dist
+    const candidates = [
+      path.resolve(currentDir, '..', 'web', 'dist'),
+      path.resolve(currentDir, '..', '..', 'web', 'dist'),
+      path.resolve(currentDir, '..', '..', '..', 'web', 'dist'),
+      path.resolve(currentDir, '..', '..', 'apps', 'web', 'dist'),
+      path.resolve(currentDir, '..', '..', '..', 'apps', 'web', 'dist'),
+    ];
+    for (const candidate of candidates) {
+      if (fs.existsSync(candidate) && fs.existsSync(path.join(candidate, 'index.html'))) {
+        return candidate;
+      }
+    }
+  } catch {
+    // ignore
+  }
+
+  return null;
+}
+
+export interface AgentDeckServerInstance extends FastifyInstance {
+  webRoot: string | null;
+}
+
+export async function createAgentDeckServer(options?: ServerOptions): Promise<AgentDeckServerInstance> {
   const server = Fastify({
     logger: false,
-  });
+  }) as unknown as AgentDeckServerInstance;
 
   const manager = options?.manager || (await AgentDeckManager.create());
   const engine = new MultiAgentOrchestrationEngine(manager);
@@ -39,6 +84,41 @@ export async function createAgentDeckServer(options?: ServerOptions): Promise<Fa
 
   // 2. WebSockets
   await server.register(fastifyWebsocket);
+
+  // 3. Static Web Deck Serving
+  const webRoot = resolveWebRoot(options?.webRoot);
+  server.webRoot = webRoot;
+  if (webRoot) {
+    await server.register(fastifyStatic, {
+      root: webRoot,
+      prefix: '/',
+      index: 'index.html',
+      wildcard: false,
+    });
+
+    // SPA fallback: handle GET requests for non-API/non-WS routes
+    server.setNotFoundHandler(async (req, reply) => {
+      const url = req.raw.url || '';
+      // If it is an API route, return standard 404 JSON
+      if (url.startsWith('/api/') || url.startsWith('/ws') || url.startsWith('/health')) {
+        return reply.status(404).send({
+          message: `Route ${req.method}:${url} not found`,
+          error: 'Not Found',
+          statusCode: 404,
+        });
+      }
+      // For static assets that really do not exist, return 404
+      if (url.startsWith('/assets/') || url.includes('.')) {
+        return reply.status(404).send({
+          message: `Asset ${url} not found`,
+          error: 'Not Found',
+          statusCode: 404,
+        });
+      }
+      // Otherwise serve index.html for client-side routing
+      return reply.sendFile('index.html');
+    });
+  }
 
   // Active connected websocket clients
   const activeSockets = new Set<WebSocket>();
@@ -77,7 +157,7 @@ export async function createAgentDeckServer(options?: ServerOptions): Promise<Fa
   // ==========================================
 
   // Health check
-  server.get('/health', async () => ({ status: 'healthy', version: '1.0.0' }));
+  server.get('/health', async () => ({ status: 'healthy', version: '1.0.1' }));
 
   // List installations & scan
   server.get('/api/v1/agents', async () => {
