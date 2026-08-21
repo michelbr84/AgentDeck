@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { render, Box, Text, useInput, useApp } from 'ink';
 import TextInput from 'ink-text-input';
-import { AgentDeckManager, MultiAgentOrchestrationEngine } from '@agentdeck/core';
+import { AgentDeckManager, ChatService } from '@agentdeck/core';
 import { AgentInstallation, AgentInstance, Room, Message, Persona } from '@agentdeck/protocol';
 
 export type TuiView = 'dashboard' | 'agents' | 'rooms' | 'chat' | 'docs';
@@ -17,7 +17,7 @@ export const TuiApp: React.FC<TuiOptions> = ({ initialView = 'dashboard', initia
   const { exit } = useApp();
   const [view, setView] = useState<TuiView>(initialView);
   const [manager, setManager] = useState<AgentDeckManager | null>(null);
-  const [engine, setEngine] = useState<MultiAgentOrchestrationEngine | null>(null);
+  const [chatService, setChatService] = useState<ChatService | null>(null);
   const [installations, setInstallations] = useState<AgentInstallation[]>([]);
   const [instances, setInstances] = useState<Array<AgentInstance & { persona: Persona; installation: AgentInstallation }>>([]);
   const [rooms, setRooms] = useState<Room[]>([]);
@@ -32,7 +32,7 @@ export const TuiApp: React.FC<TuiOptions> = ({ initialView = 'dashboard', initia
     async function init() {
       const mgr = await AgentDeckManager.create();
       setManager(mgr);
-      setEngine(new MultiAgentOrchestrationEngine(mgr));
+      setChatService(new ChatService(mgr));
       const instList = await mgr.scanAndSyncInstallations();
       setInstallations(instList);
       const instanceList = await mgr.listAgentInstances();
@@ -121,10 +121,10 @@ export const TuiApp: React.FC<TuiOptions> = ({ initialView = 'dashboard', initia
     setIsOrchestrating(true);
 
     try {
-      if (engine) {
-        const result = await engine.executeRun({
+      if (chatService) {
+        const result = await chatService.send({
           roomId: currentRoom.id,
-          triggerMessage: content,
+          content,
           senderUserId: 'local-user',
           senderDisplayName: 'Michel (You)',
         });

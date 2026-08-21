@@ -5,7 +5,7 @@ import fastifyStatic from '@fastify/static';
 import path from 'node:path';
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { AgentDeckManager, MultiAgentOrchestrationEngine } from '@agentdeck/core';
+import { AgentDeckManager, ChatService } from '@agentdeck/core';
 import { redactSecrets, timingSafeEqual } from '@agentdeck/security';
 import { AGENTDECK_PATHS } from '@agentdeck/shared';
 import type { Persona, RoomMode } from '@agentdeck/protocol';
@@ -65,7 +65,7 @@ export async function createAgentDeckServer(options?: ServerOptions): Promise<Ag
   }) as unknown as AgentDeckServerInstance;
 
   const manager = options?.manager || (await AgentDeckManager.create());
-  const engine = new MultiAgentOrchestrationEngine(manager);
+  const chatService = new ChatService(manager);
   const authToken = options?.authToken;
 
   // 1. CORS
@@ -157,7 +157,7 @@ export async function createAgentDeckServer(options?: ServerOptions): Promise<Ag
   // ==========================================
 
   // Health check
-  server.get('/health', async () => ({ status: 'healthy', version: '1.0.1' }));
+  server.get('/health', async () => ({ status: 'healthy', version: '1.0.3' }));
 
   // List installations & scan
   server.get('/api/v1/agents', async () => {
@@ -276,12 +276,12 @@ export async function createAgentDeckServer(options?: ServerOptions): Promise<Ag
   server.post('/api/v1/rooms/:id/run', async (req) => {
     const { id } = req.params as { id: string };
     const body = req.body as { prompt?: string; message?: string; userId?: string; userName?: string; mode?: RoomMode };
-    const result = await engine.executeRun({
+    const result = await chatService.send({
       roomId: id,
-      triggerMessage: body.prompt || body.message || '',
+      content: body.prompt || body.message || '',
       senderUserId: body.userId || 'user-default',
       senderDisplayName: body.userName || 'User',
-      modeOverride: body.mode,
+      mode: body.mode,
     });
     return redactSecrets(result);
   });

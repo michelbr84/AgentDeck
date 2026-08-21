@@ -15,6 +15,8 @@ export interface CommandSpec {
   env?: Record<string, string>;
   timeoutMs?: number;
   abortSignal?: AbortSignal;
+  stdin?: string | Buffer;
+  acceptedExitCodes?: number[];
 }
 
 export interface CommandOutput {
@@ -83,6 +85,13 @@ export async function executeSafeCommand(
       child = spawn(spec.command, sanitizedArgs, spawnOpts);
     } catch (err) {
       return reject(new Error(`Failed to spawn process "${spec.command}": ${(err as Error).message}`));
+    }
+
+    if (spec.stdin !== undefined && spec.stdin !== null) {
+      if (child.stdin) {
+        child.stdin.write(spec.stdin);
+        child.stdin.end();
+      }
     }
 
 

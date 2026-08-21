@@ -367,6 +367,10 @@ export class HermesAdapter implements AgentAdapter {
       context.onChunk?.(mock);
       return {
         content: mock,
+        rawStdout: mock,
+        rawStderr: '',
+        exitCode: 0,
+        transport: 'mock',
         tokensUsed: {
           input: { source: 'estimated', value: Math.ceil(promptText.length / 4) },
           output: { source: 'estimated', value: Math.ceil(mock.length / 4) },
@@ -378,39 +382,94 @@ export class HermesAdapter implements AgentAdapter {
 
     const binPath = await this.findBinary();
     if (!binPath) {
-      throw new Error('Hermes binary not found');
+      throw new Error('Hermes binary (hermes) not found');
     }
 
     const promptText = context.promptTree.finalRawPrompt;
-    let fullOutput = '';
+    let fullStdout = '';
+    let fullStderr = '';
+
+    // Hermes safe one-shot mode: -z sends a single prompt and prints ONLY final response text to stdout.
+    // Default mode is 'normal': NO --yolo and NO --accept-hooks by default.
+    // User can explicitly opt-in to 'trusted-hooks' (adds --accept-hooks) or 'unrestricted' (adds --yolo).
+    const args: Array<string | { value: string; type: 'opaque-user-content' }> = [
+      '-z',
+      { value: promptText, type: 'opaque-user-content' },
+    ];
+
+    const ctx = context as unknown as Record<string, unknown>;
+    const tr = context.turnRequest as unknown as Record<string, unknown> | undefined;
+    const permPolicy = (ctx.permissionPolicy as string | undefined) || (tr?.permissionPolicy as string | undefined);
+    const acceptHooks = ctx.acceptHooks === true || permPolicy === 'trusted-hooks';
+    const unrestricted = ctx.yolo === true || ctx.dangerouslySkipPermissions === true || permPolicy === 'unrestricted';
+
+    if (acceptHooks) {
+      args.push('--accept-hooks');
+    }
+    if (unrestricted) {
+      args.push('--yolo');
+    }
 
     const output = await executeSafeCommand(
       {
         command: binPath,
-        args: [
-          'chat',
-          '--prompt',
-          { value: promptText, type: 'opaque-user-content' },
-        ],
+        args,
         cwd: context.workspaceDir || process.cwd(),
         abortSignal: context.abortSignal,
         timeoutMs: 300000,
       },
       {
         onStdoutChunk: (chunk) => {
-          fullOutput += chunk;
+          fullStdout += chunk;
           context.onChunk?.(chunk);
+        },
+        onStderrChunk: (chunk) => {
+          fullStderr += chunk;
         },
       }
     );
 
-    const estTokens = Math.ceil((promptText.length + output.stdout.length) / 4);
+    const stdoutClean = (output.stdout || fullStdout).trim();
+    const stderrClean = (output.stderr || fullStderr).trim();
+
+    if (output.exitCode !== 0) {
+      const combined = `${stderrClean} ${stdoutClean}`.toLowerCase();
+      if (
+        combined.includes('permission') ||
+        combined.includes('approval required') ||
+        combined.includes('approval') ||
+        combined.includes('unapproved') ||
+        combined.includes('requires confirmation')
+      ) {
+        throw new Error(`Hermes permission_required: Command or tool execution requires approval. Run with trusted-hooks or unrestricted policy if authorized.`);
+      }
+      if (
+        combined.includes('hook') &&
+        (combined.includes('unseen') || combined.includes('not approved') || combined.includes('prompt'))
+      ) {
+        throw new Error(`Hermes hook_consent_required: Unseen shell hook requires approval. Run with trusted-hooks policy if authorized.`);
+      }
+      throw new Error(`Hermes process failed with exit code ${output.exitCode}: ${stderrClean || stdoutClean || 'Process failed'}`);
+    }
+
+    if (!stdoutClean) {
+      if (stderrClean) {
+        throw new Error(`Hermes returned empty response (diagnostics: ${stderrClean})`);
+      }
+      throw new Error('EMPTY_AGENT_RESPONSE: Hermes produced no output.');
+    }
+
+    const estTokens = Math.ceil((promptText.length + stdoutClean.length) / 4);
 
     return {
-      content: output.stdout.trim() || fullOutput.trim(),
+      content: stdoutClean,
+      rawStdout: stdoutClean,
+      rawStderr: stderrClean,
+      exitCode: output.exitCode,
+      transport: 'cli-argv',
       tokensUsed: {
         input: { source: 'estimated', value: Math.ceil(promptText.length / 4) },
-        output: { source: 'estimated', value: Math.ceil(output.stdout.length / 4) },
+        output: { source: 'estimated', value: Math.ceil(stdoutClean.length / 4) },
         total: { source: 'estimated', value: estTokens },
       },
       costUSD: { source: 'estimated', value: (estTokens / 1000) * 0.002 },

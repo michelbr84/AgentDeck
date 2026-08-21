@@ -136,6 +136,7 @@ describe('@agentdeck/adapters unit & fixture tests', () => {
         sessionId: `session-${adapter.definition.id}`,
         promptTree,
         workspaceDir: process.cwd(),
+        abortSignal: new AbortController().signal,
       });
 
       expect(result).toBeDefined();
@@ -143,5 +144,49 @@ describe('@agentdeck/adapters unit & fixture tests', () => {
       expect(result.content.length).toBeGreaterThan(0);
       expect(result.tokensUsed.total.value).toBeGreaterThan(0);
     }
+  });
+
+  it('HermesAdapter should not include --yolo or --accept-hooks by default', async () => {
+    const hermes = new HermesAdapter();
+    const promptTree: PromptCompositionTree = {
+      instanceId: 'hermes-safe-inst',
+      createdAt: new Date().toISOString(),
+      totalEstimatedTokens: { source: 'estimated', value: 10 },
+      layers: [],
+      finalRawPrompt: 'Reply with AGENTDECK_HERMES_SAFE_OK',
+    };
+
+    const res = await hermes.execute({
+      runId: 'hermes-test-safe',
+      sessionId: 'session-hermes',
+      promptTree,
+      workspaceDir: process.cwd(),
+      abortSignal: new AbortController().signal,
+    });
+
+    expect(res).toBeDefined();
+    expect(res.exitCode).toBe(0);
+  });
+
+  it('ClaudeCodeAdapter should not include --dangerously-skip-permissions by default', async () => {
+    const claude = new ClaudeCodeAdapter();
+    const promptTree: PromptCompositionTree = {
+      instanceId: 'claude-safe-inst',
+      createdAt: new Date().toISOString(),
+      totalEstimatedTokens: { source: 'estimated', value: 10 },
+      layers: [],
+      finalRawPrompt: 'Reply with OK',
+    };
+
+    const res = await claude.execute({
+      runId: 'claude-test-safe',
+      sessionId: 'session-claude',
+      promptTree,
+      workspaceDir: process.cwd(),
+      abortSignal: new AbortController().signal,
+    });
+
+    expect(res).toBeDefined();
+    expect(res.exitCode).toBe(0);
   });
 });

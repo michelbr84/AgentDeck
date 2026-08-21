@@ -312,6 +312,10 @@ export class PiAdapter implements AgentAdapter {
       context.onChunk?.(mockResponse);
       return {
         content: mockResponse,
+        rawStdout: mockResponse,
+        rawStderr: '',
+        exitCode: 0,
+        transport: 'mock',
         tokensUsed: {
           input: { source: 'estimated', value: Math.ceil(promptText.length / 4) },
           output: { source: 'estimated', value: Math.ceil(mockResponse.length / 4) },
@@ -328,14 +332,31 @@ export class PiAdapter implements AgentAdapter {
       abortSignal: context.abortSignal,
     });
 
-    const content = output.stdout.trim() || output.stderr.trim();
-    const estTokens = Math.ceil((promptText.length + content.length) / 4);
+    const stdoutClean = output.stdout.trim();
+    const stderrClean = output.stderr.trim();
+
+    if (output.exitCode !== 0) {
+      throw new Error(`Pi CLI process failed with exit code ${output.exitCode}: ${stderrClean || stdoutClean || 'Process failed'}`);
+    }
+
+    if (!stdoutClean) {
+      if (stderrClean) {
+        throw new Error(`Pi CLI returned empty response (diagnostics: ${stderrClean})`);
+      }
+      throw new Error('EMPTY_AGENT_RESPONSE: Pi CLI produced no output.');
+    }
+
+    const estTokens = Math.ceil((promptText.length + stdoutClean.length) / 4);
 
     return {
-      content,
+      content: stdoutClean,
+      rawStdout: stdoutClean,
+      rawStderr: stderrClean,
+      exitCode: output.exitCode,
+      transport: 'cli-argv',
       tokensUsed: {
         input: { source: 'estimated', value: Math.ceil(promptText.length / 4) },
-        output: { source: 'estimated', value: Math.ceil(content.length / 4) },
+        output: { source: 'estimated', value: Math.ceil(stdoutClean.length / 4) },
         total: { source: 'estimated', value: estTokens },
       },
       costUSD: { source: 'estimated', value: (estTokens / 1000) * 0.002 },

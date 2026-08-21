@@ -78,9 +78,13 @@ export class GarraIAAdapter implements AgentAdapter {
 
     const candidatePaths = [
       path.join(os.homedir(), '.local/bin/garraia'),
+      path.join(os.homedir(), '.local/bin/garra'),
       path.join(os.homedir(), '.cargo/bin/garraia'),
+      path.join(os.homedir(), '.cargo/bin/garra'),
       '/usr/local/bin/garraia',
+      '/usr/local/bin/garra',
       '/usr/bin/garraia',
+      '/usr/bin/garra',
     ];
 
     for (const p of candidatePaths) {
@@ -93,15 +97,17 @@ export class GarraIAAdapter implements AgentAdapter {
       }
     }
 
-    try {
-      const res = await executeSafeCommand({ command: 'which', args: ['garraia'] });
-      const found = res.stdout.trim();
-      if (found) {
-        this.binaryPathCache = found;
-        return found;
+    for (const binName of ['garraia', 'garra']) {
+      try {
+        const res = await executeSafeCommand({ command: 'which', args: [binName] });
+        const found = res.stdout.trim();
+        if (found) {
+          this.binaryPathCache = found;
+          return found;
+        }
+      } catch {
+        // not in PATH
       }
-    } catch {
-      // not in PATH
     }
 
     return null;
@@ -349,6 +355,10 @@ export class GarraIAAdapter implements AgentAdapter {
       context.onChunk?.(mock);
       return {
         content: mock,
+        rawStdout: mock,
+        rawStderr: '',
+        exitCode: 0,
+        transport: 'mock',
         tokensUsed: {
           input: { source: 'estimated', value: Math.ceil(promptText.length / 4) },
           output: { source: 'estimated', value: Math.ceil(mock.length / 4) },
@@ -360,39 +370,69 @@ export class GarraIAAdapter implements AgentAdapter {
 
     const binPath = await this.findBinary();
     if (!binPath) {
-      throw new Error('GarraIA binary not found');
+      throw new Error('GarraIA binary (garra/garraia) not found');
     }
 
     const promptText = context.promptTree.finalRawPrompt;
-    let fullOutput = '';
+    let fullStdout = '';
+    let fullStderr = '';
 
+    // Programmatic CLI invocation using `ask --json` reading from stdin (robust & safe)
     const output = await executeSafeCommand(
       {
         command: binPath,
-        args: [
-          'run',
-          '--prompt',
-          { value: promptText, type: 'opaque-user-content' },
-        ],
+        args: ['ask', '--json'],
+        stdin: promptText,
         cwd: context.workspaceDir || process.cwd(),
         abortSignal: context.abortSignal,
         timeoutMs: 300000,
       },
       {
         onStdoutChunk: (chunk) => {
-          fullOutput += chunk;
+          fullStdout += chunk;
           context.onChunk?.(chunk);
+        },
+        onStderrChunk: (chunk) => {
+          fullStderr += chunk;
         },
       }
     );
 
-    const estTokens = Math.ceil((promptText.length + output.stdout.length) / 4);
+    const stdoutClean = (output.stdout || fullStdout).trim();
+    const stderrClean = (output.stderr || fullStderr).trim();
+
+    if (output.exitCode !== 0) {
+      throw new Error(`GarraIA process failed with exit code ${output.exitCode}: ${stderrClean || stdoutClean || 'Process failed'}`);
+    }
+
+    let parsedContent = '';
+    try {
+      const jsonRes = JSON.parse(stdoutClean);
+      // garra.ask.v1 envelope: { answer: "...", response: "...", content: "...", text: "...", reply: "..." }
+      parsedContent = jsonRes.answer || jsonRes.response || jsonRes.content || jsonRes.text || jsonRes.reply || (typeof jsonRes === 'string' ? jsonRes : '');
+    } catch {
+      parsedContent = stdoutClean;
+    }
+
+    if (!parsedContent && !stdoutClean) {
+      if (stderrClean) {
+        throw new Error(`GarraIA returned empty response (diagnostics: ${stderrClean})`);
+      }
+      throw new Error('EMPTY_AGENT_RESPONSE: GarraIA produced no output.');
+    }
+
+    const finalContent = parsedContent || stdoutClean;
+    const estTokens = Math.ceil((promptText.length + finalContent.length) / 4);
 
     return {
-      content: output.stdout.trim() || fullOutput.trim(),
+      content: finalContent,
+      rawStdout: stdoutClean,
+      rawStderr: stderrClean,
+      exitCode: output.exitCode,
+      transport: 'cli-json',
       tokensUsed: {
         input: { source: 'estimated', value: Math.ceil(promptText.length / 4) },
-        output: { source: 'estimated', value: Math.ceil(output.stdout.length / 4) },
+        output: { source: 'estimated', value: Math.ceil(finalContent.length / 4) },
         total: { source: 'estimated', value: estTokens },
       },
       costUSD: { source: 'estimated', value: (estTokens / 1000) * 0.002 },

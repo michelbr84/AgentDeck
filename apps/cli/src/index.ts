@@ -5,7 +5,7 @@ import path from 'node:path';
 import os from 'node:os';
 import fs from 'node:fs/promises';
 import { runSetupWizard } from './wizard/index.js';
-import { AgentDeckManager, MultiAgentOrchestrationEngine } from '@agentdeck/core';
+import { AgentDeckManager, ChatService } from '@agentdeck/core';
 import type { RoomMode } from '@agentdeck/protocol';
 import { createAgentDeckServer } from '@agentdeck/server';
 
@@ -14,7 +14,7 @@ const program = new Command();
 program
   .name('agentdeck')
   .description('Universal multi-agent manager, group chat deck, and orchestrator for Linux & Web')
-  .version('1.0.2');
+  .version('1.0.3');
 
 // 1. SETUP / ONBOARDING WIZARD
 program
@@ -119,7 +119,7 @@ program
   .option('-m, --mode <mode>', 'Orchestration mode (mention | panel | debate | coordinator)', 'panel')
   .action(async (promptText, options) => {
     const manager = await AgentDeckManager.create();
-    const engine = new MultiAgentOrchestrationEngine(manager);
+    const chatService = new ChatService(manager);
 
     const rooms = await manager.listRooms();
     let room = rooms.find((r) => r.name === options.room);
@@ -137,12 +137,12 @@ program
     console.log(chalk.bold.cyan(`\n🚀 Executing AgentDeck Orchestration [${options.mode.toUpperCase()}]...`));
     console.log(chalk.dim(`Prompt: "${promptText}"\n`));
 
-    const result = await engine.executeRun({
+    const result = await chatService.send({
       roomId: room.id,
-      triggerMessage: promptText,
+      content: promptText,
       senderUserId: 'cli-user',
       senderDisplayName: 'CLI User',
-      modeOverride: options.mode as RoomMode,
+      mode: options.mode as RoomMode,
       onTurnStart: (name) => console.log(chalk.yellow(`\n[Agent Turn: ${name}]`)),
       onChunk: (_, chunk) => process.stdout.write(chunk),
     });

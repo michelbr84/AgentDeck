@@ -9,6 +9,9 @@ import {
   HealthCheckLevel,
   PromptCompositionTree,
   UsageMetric,
+  AgentTurnRequest,
+  AgentTransportKind,
+  AgentStreamEvent,
 } from '@agentdeck/protocol';
 
 export interface DetectionResult {
@@ -30,13 +33,21 @@ export interface ExecutionContext {
   promptTree: PromptCompositionTree;
   workspaceDir?: string;
   abortSignal: AbortSignal;
+  turnRequest?: AgentTurnRequest;
   onChunk?: (chunk: string) => void;
   onToolCall?: (toolName: string, args: unknown) => void;
   onToolResult?: (toolName: string, result: unknown) => void;
+  onEvent?: (event: AgentStreamEvent) => void;
 }
 
 export interface ExecutionResult {
   content: string;
+  rawStdout?: string;
+  rawStderr?: string;
+  exitCode?: number;
+  transport?: AgentTransportKind;
+  diagnostics?: string[];
+  error?: string;
   tokensUsed: {
     input: UsageMetric;
     output: UsageMetric;

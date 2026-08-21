@@ -358,6 +358,10 @@ export class OpenClawAdapter implements AgentAdapter {
       context.onChunk?.(mock);
       return {
         content: mock,
+        rawStdout: mock,
+        rawStderr: '',
+        exitCode: 0,
+        transport: 'mock',
         tokensUsed: {
           input: { source: 'estimated', value: Math.ceil(promptText.length / 4) },
           output: { source: 'estimated', value: Math.ceil(mock.length / 4) },
@@ -369,17 +373,19 @@ export class OpenClawAdapter implements AgentAdapter {
 
     const binPath = await this.findBinary();
     if (!binPath) {
-      throw new Error('OpenClaw binary not found');
+      throw new Error('OpenClaw binary (openclaw) not found');
     }
 
     const isMjs = binPath.endsWith('.mjs') || binPath.endsWith('.js');
     const cmd = isMjs ? 'node' : binPath;
     const promptText = context.promptTree.finalRawPrompt;
+    // OpenClaw CLI contract: `agent --local --message "<prompt>" --json` or `agent --local -m "<prompt>"`
     const args: Array<string | { value: string; type: 'opaque-user-content' }> = isMjs
-      ? [binPath, 'chat', '--prompt', { value: promptText, type: 'opaque-user-content' }]
-      : ['chat', '--prompt', { value: promptText, type: 'opaque-user-content' }];
+      ? [binPath, 'agent', '--local', '--json', '--message', { value: promptText, type: 'opaque-user-content' }]
+      : ['agent', '--local', '--json', '--message', { value: promptText, type: 'opaque-user-content' }];
 
-    let fullOutput = '';
+    let fullStdout = '';
+    let fullStderr = '';
     const output = await executeSafeCommand(
       {
         command: cmd,
@@ -390,19 +396,61 @@ export class OpenClawAdapter implements AgentAdapter {
       },
       {
         onStdoutChunk: (chunk) => {
-          fullOutput += chunk;
+          fullStdout += chunk;
           context.onChunk?.(chunk);
+        },
+        onStderrChunk: (chunk) => {
+          fullStderr += chunk;
         },
       }
     );
 
-    const estTokens = Math.ceil((promptText.length + output.stdout.length) / 4);
+    const stdoutClean = (output.stdout || fullStdout).trim();
+    const stderrClean = (output.stderr || fullStderr).trim();
+
+    if (output.exitCode !== 0) {
+      const combined = `${stderrClean} ${stdoutClean}`.toLowerCase();
+      if (
+        combined.includes('no model') ||
+        combined.includes('api key') ||
+        combined.includes('provider') ||
+        combined.includes('unconfigured') ||
+        combined.includes('auth') ||
+        combined.includes('credentials')
+      ) {
+        throw new Error(`OpenClaw error: Model provider configuration required. Details: ${stderrClean || stdoutClean}`);
+      }
+      throw new Error(`OpenClaw process failed with exit code ${output.exitCode}: ${stderrClean || stdoutClean || 'Process failed'}`);
+    }
+
+    let parsedContent = '';
+    try {
+      const jsonRes = JSON.parse(stdoutClean);
+      // OpenClaw json response envelope: { reply, message, text, content, response }
+      parsedContent = jsonRes.reply || jsonRes.message || jsonRes.text || jsonRes.content || jsonRes.response || (typeof jsonRes === 'string' ? jsonRes : '');
+    } catch {
+      parsedContent = stdoutClean;
+    }
+
+    if (!parsedContent && !stdoutClean) {
+      if (stderrClean) {
+        throw new Error(`OpenClaw returned empty response (diagnostics: ${stderrClean})`);
+      }
+      throw new Error('EMPTY_AGENT_RESPONSE: OpenClaw produced no output.');
+    }
+
+    const finalContent = parsedContent || stdoutClean;
+    const estTokens = Math.ceil((promptText.length + finalContent.length) / 4);
 
     return {
-      content: output.stdout.trim() || fullOutput.trim(),
+      content: finalContent,
+      rawStdout: stdoutClean,
+      rawStderr: stderrClean,
+      exitCode: output.exitCode,
+      transport: 'cli-argv',
       tokensUsed: {
         input: { source: 'estimated', value: Math.ceil(promptText.length / 4) },
-        output: { source: 'estimated', value: Math.ceil(output.stdout.length / 4) },
+        output: { source: 'estimated', value: Math.ceil(finalContent.length / 4) },
         total: { source: 'estimated', value: estTokens },
       },
       costUSD: { source: 'estimated', value: (estTokens / 1000) * 0.002 },

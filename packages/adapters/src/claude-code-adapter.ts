@@ -249,7 +249,7 @@ export class ClaudeCodeAdapter implements AgentAdapter {
       try {
         const testRes = await executeSafeCommand({
           command: binPath,
-          args: ['-p', 'Respond only with: OK', '--dangerously-skip-permissions'],
+          args: ['-p', 'Respond only with: OK'],
           timeoutMs: 15000,
         });
         if (testRes.stdout.includes('OK') || testRes.exitCode === 0) {
@@ -365,6 +365,10 @@ export class ClaudeCodeAdapter implements AgentAdapter {
       context.onChunk?.(mock);
       return {
         content: mock,
+        rawStdout: mock,
+        rawStderr: '',
+        exitCode: 0,
+        transport: 'mock',
         tokensUsed: {
           input: { source: 'estimated', value: Math.ceil(promptText.length / 4) },
           output: { source: 'estimated', value: Math.ceil(mock.length / 4) },
@@ -376,17 +380,27 @@ export class ClaudeCodeAdapter implements AgentAdapter {
 
     const binPath = await this.findBinary();
     if (!binPath) {
-      throw new Error('Claude Code binary not found');
+      throw new Error('Claude Code binary (claude) not found');
     }
 
     const promptText = context.promptTree.finalRawPrompt;
     const args: Array<string | { value: string; type: 'opaque-user-content' }> = [
       '-p',
       { value: promptText, type: 'opaque-user-content' },
-      '--dangerously-skip-permissions',
     ];
 
-    let fullOutput = '';
+    // Explicit opt-in permission policy bypass: only pass --dangerously-skip-permissions
+    // if permissionPolicy is explicitly 'unrestricted' or dangerouslySkipPermissions flag is set
+    const ctx = context as unknown as Record<string, unknown>;
+    const tr = context.turnRequest as unknown as Record<string, unknown> | undefined;
+    const permPolicy = (ctx.permissionPolicy as string | undefined) || (tr?.permissionPolicy as string | undefined);
+    const explicitBypass = ctx.dangerouslySkipPermissions === true || permPolicy === 'unrestricted';
+    if (explicitBypass) {
+      args.push('--dangerously-skip-permissions');
+    }
+
+    let fullStdout = '';
+    let fullStderr = '';
     const output = await executeSafeCommand(
       {
         command: binPath,
@@ -397,22 +411,56 @@ export class ClaudeCodeAdapter implements AgentAdapter {
       },
       {
         onStdoutChunk: (chunk) => {
-          fullOutput += chunk;
+          fullStdout += chunk;
           context.onChunk?.(chunk);
         },
         onStderrChunk: (chunk) => {
-          context.onChunk?.(chunk);
+          fullStderr += chunk;
         },
       }
     );
 
-    const estTokens = Math.ceil((promptText.length + output.stdout.length) / 4);
+    const stdoutClean = (output.stdout || fullStdout).trim();
+    const stderrClean = (output.stderr || fullStderr).trim();
+
+    // Strict exit code & error classification
+    if (output.exitCode !== 0) {
+      const combined = `${stderrClean} ${stdoutClean}`.toLowerCase();
+      if (
+        combined.includes('credit') ||
+        combined.includes('quota') ||
+        combined.includes('exhaust') ||
+        combined.includes('billing') ||
+        combined.includes('payment') ||
+        combined.includes('plans & billing') ||
+        combined.includes('balance')
+      ) {
+        throw new Error(`Claude Code error: Anthropic API usage credits or quota exhausted. Details: ${stderrClean || stdoutClean}`);
+      }
+      if (combined.includes('unauthorized') || combined.includes('login') || combined.includes('auth')) {
+        throw new Error(`Claude Code authentication failed. Please run \`claude login\`. Details: ${stderrClean || stdoutClean}`);
+      }
+      throw new Error(`Claude Code process failed with exit code ${output.exitCode}: ${stderrClean || stdoutClean || 'Process failed'}`);
+    }
+
+    if (!stdoutClean) {
+      if (stderrClean) {
+        throw new Error(`Claude Code returned empty response (diagnostics: ${stderrClean})`);
+      }
+      throw new Error('EMPTY_AGENT_RESPONSE: Claude Code produced no output.');
+    }
+
+    const estTokens = Math.ceil((promptText.length + stdoutClean.length) / 4);
 
     return {
-      content: output.stdout.trim() || fullOutput.trim(),
+      content: stdoutClean,
+      rawStdout: stdoutClean,
+      rawStderr: stderrClean,
+      exitCode: output.exitCode,
+      transport: 'cli-argv',
       tokensUsed: {
         input: { source: 'estimated', value: Math.ceil(promptText.length / 4) },
-        output: { source: 'estimated', value: Math.ceil(output.stdout.length / 4) },
+        output: { source: 'estimated', value: Math.ceil(stdoutClean.length / 4) },
         total: { source: 'estimated', value: estTokens },
       },
       costUSD: { source: 'estimated', value: (estTokens / 1000) * 0.003 },

@@ -53,11 +53,9 @@ export class MultiAgentOrchestrationEngine {
       members.filter((m) => m.memberType === 'agent_instance').map((m) => m.memberId)
     );
 
-    // Filter instances to only those belonging to the room (or all if none configured)
-    const instances =
-      roomMemberInstanceIds.size > 0
-        ? allInstances.filter((i) => roomMemberInstanceIds.has(i.id))
-        : allInstances;
+    // Filter instances strictly to those belonging to the room.
+    // Invariant: If a room has 0 agent members, exactly 0 agents must execute (no global fallback to allInstances).
+    const instances = allInstances.filter((i) => roomMemberInstanceIds.has(i.id));
 
     // 1. Post user trigger message
     const userMsg = await this.manager.postMessage({
@@ -80,6 +78,24 @@ export class MultiAgentOrchestrationEngine {
       mode,
       activeInstances: instances.map((i) => i.id),
     });
+
+    if (instances.length === 0) {
+      this.manager.eventBus.emit('run:completed', {
+        runId,
+        totalTurns: 0,
+        totalCost: 0,
+      });
+
+      return {
+        runId,
+        roomId: room.id,
+        status: 'completed',
+        turnsExecuted: 0,
+        messages: producedMessages,
+        tokensUsed: 0,
+        costUSD: 0,
+      };
+    }
 
     try {
       if (mode === 'mention') {
@@ -272,13 +288,17 @@ export class MultiAgentOrchestrationEngine {
         },
       });
 
-      const finalContent = execResult.content || answerText || `[${instance.name}] Acknowledged.`;
+      const rawContent = (execResult.content || answerText || '').trim();
+      if (!rawContent) {
+        throw new Error(`EMPTY_AGENT_RESPONSE: ${instance.name} produced no response.`);
+      }
+
       const msg = await this.manager.postMessage({
         roomId: room.id,
         senderType: 'agent_instance',
         senderId: instance.id,
         senderDisplayName: `${instance.persona.avatarEmoji || '🤖'} ${instance.name}`,
-        content: finalContent,
+        content: rawContent,
         contentType: 'text',
       });
 

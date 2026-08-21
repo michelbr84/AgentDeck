@@ -13,7 +13,7 @@ RED='\033[0;31m'
 NC='\033[0m'
 
 REPO="michelbr84/AgentDeck"
-FALLBACK_VERSION="v1.0.2"
+FALLBACK_VERSION="v1.0.3"
 
 echo -e "${CYAN}"
 echo "  █████╗  ██████╗ ███████╗███╗   ██╗████████╗██████╗ ███████╗ ██████╗██╗  ██╗"

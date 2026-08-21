@@ -279,3 +279,62 @@ export const EventEnvelopeSchema = z.object({
 export type EventEnvelope<T = unknown> = Omit<z.infer<typeof EventEnvelopeSchema>, 'payload'> & {
   payload: T;
 };
+
+// ==========================================
+// 12. NORMALIZED TRANSPORT & TURN EXECUTION
+// ==========================================
+export const AgentTransportKindSchema = z.enum([
+  'cli-argv',
+  'cli-stdin',
+  'cli-json',
+  'json-rpc',
+  'http',
+  'mock',
+]);
+export type AgentTransportKind = z.infer<typeof AgentTransportKindSchema>;
+
+export const AgentMessageSchema = z.object({
+  role: z.enum(['system', 'user', 'assistant', 'tool']),
+  content: z.string(),
+  name: z.string().optional(),
+  toolCalls: z.array(z.record(z.unknown())).optional(),
+});
+export type AgentMessage = z.infer<typeof AgentMessageSchema>;
+
+export const AgentTurnRequestSchema = z.object({
+  runId: IdSchema,
+  sessionId: IdSchema,
+  instanceId: IdSchema,
+  roomId: IdSchema.optional(),
+  messages: z.array(AgentMessageSchema),
+  promptTree: PromptCompositionTreeSchema,
+  workspaceDir: z.string().optional(),
+  timeoutMs: z.number().int().positive().optional(),
+  model: z.string().optional(),
+  transport: AgentTransportKindSchema.optional(),
+});
+export type AgentTurnRequest = z.infer<typeof AgentTurnRequestSchema>;
+
+export const AgentTurnResultSchema = z.object({
+  content: z.string(),
+  rawStdout: z.string().optional(),
+  rawStderr: z.string().optional(),
+  exitCode: z.number().int(),
+  transport: AgentTransportKindSchema,
+  tokensUsed: z.object({
+    input: UsageMetricSchema,
+    output: UsageMetricSchema,
+    total: UsageMetricSchema,
+  }),
+  costUSD: UsageMetricSchema,
+  diagnostics: z.array(z.string()).optional(),
+  error: z.string().optional(),
+});
+export type AgentTurnResult = z.infer<typeof AgentTurnResultSchema>;
+
+export type AgentStreamEvent =
+  | { type: 'chunk'; text: string }
+  | { type: 'tool_call'; toolName: string; args: unknown }
+  | { type: 'tool_result'; toolName: string; result: unknown }
+  | { type: 'diagnostic'; message: string };
+
