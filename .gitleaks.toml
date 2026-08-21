@@ -1,0 +1,7 @@
+[allowlist]
+description = "AgentDeck Gitleaks test fixture allowlist"
+paths = [
+  '''packages/security/tests/security\.test\.ts''',
+  '''packages/core/tests/prompt-composer\.test\.ts''',
+  '''packages/server/tests/server\.test\.ts''',
+]

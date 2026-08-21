@@ -1,0 +1,59 @@
+# Dependencies
+node_modules/
+.pnpm-store/
+dist/
+build/
+coverage/
+.turbo/
+
+# Environment and Secrets (Defense in depth)
+.env
+.env.*
+!.env.example
+secrets/
+*.pem
+*.key
+*.cert
+*.crt
+*.pfx
+*.p12
+*.kdbx
+credentials.json
+token.json
+service-account*.json
+
+# AgentDeck operational data and user config (never commit user workspace / data)
+.agentdeck/
+~/.agentdeck/
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+pnpm-debug.log*
+
+# OS and Editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/*
+!.vscode/settings.json
+!.vscode/extensions.json
+*.swp
+*.swo
+*~
+
+# Test & report artifacts
+test-results/
+playwright-report/
+blob-report/
+*.tsbuildinfo
+dist-release/
+Multi-Agent-Organizer.md
