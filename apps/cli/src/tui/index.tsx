@@ -50,16 +50,19 @@ export const TuiApp: React.FC<TuiOptions> = ({ initialView = 'dashboard', initia
     init();
   }, [initialRoom]);
 
-  useInput((input, key) => {
-    if (key.escape || (key.ctrl && input === 'c')) {
-      exit();
-    }
-    if (key.ctrl && input === '1') setView('dashboard');
-    if (key.ctrl && input === '2') setView('agents');
-    if (key.ctrl && input === '3') setView('rooms');
-    if (key.ctrl && input === '4') setView('chat');
-    if (key.ctrl && input === '5') setView('docs');
-  });
+  useInput(
+    (input, key) => {
+      if (key.escape || (key.ctrl && input === 'c')) {
+        exit();
+      }
+      if (key.ctrl && input === '1') setView('dashboard');
+      if (key.ctrl && input === '2') setView('agents');
+      if (key.ctrl && input === '3') setView('rooms');
+      if (key.ctrl && input === '4') setView('chat');
+      if (key.ctrl && input === '5') setView('docs');
+    },
+    { isActive: process.stdin.isTTY }
+  );
 
   const handleSendMessage = async () => {
     if (!chatInput.trim() || !manager || !currentRoom) return;
@@ -193,12 +196,16 @@ export const TuiApp: React.FC<TuiOptions> = ({ initialView = 'dashboard', initia
             <Text bold color="green">
               Prompt {'>'}{' '}
             </Text>
-            <TextInput
-              value={chatInput}
-              onChange={setChatInput}
-              onSubmit={handleSendMessage}
-              placeholder="Type message or @agent tag..."
-            />
+            {process.stdin.isTTY ? (
+              <TextInput
+                value={chatInput}
+                onChange={setChatInput}
+                onSubmit={handleSendMessage}
+                placeholder="Type message or @agent tag..."
+              />
+            ) : (
+              <Text dimColor>Interactive input requires TTY terminal.</Text>
+            )}
           </Box>
         </Box>
       )}
