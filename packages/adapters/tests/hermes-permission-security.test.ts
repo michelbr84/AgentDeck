@@ -6,6 +6,7 @@ import * as adapterSdk from '@agentdeck/adapter-sdk';
 describe('Hermes & Claude Security and Permission Boundaries', () => {
   it('Hermes default command must NOT contain --yolo or --accept-hooks', async () => {
     const hermes = new HermesAdapter();
+    vi.spyOn(hermes as unknown as { findBinary: () => Promise<string> }, 'findBinary').mockResolvedValue('/mock/bin/hermes');
     const executeSafeSpy = vi.spyOn(adapterSdk, 'executeSafeCommand').mockResolvedValue({
       stdout: 'AGENTDECK_HERMES_SAFE_OK',
       stderr: '',
@@ -49,6 +50,7 @@ describe('Hermes & Claude Security and Permission Boundaries', () => {
 
   it('Hermes with trusted-hooks policy includes --accept-hooks only, not --yolo', async () => {
     const hermes = new HermesAdapter();
+    vi.spyOn(hermes as unknown as { findBinary: () => Promise<string> }, 'findBinary').mockResolvedValue('/mock/bin/hermes');
     const executeSafeSpy = vi.spyOn(adapterSdk, 'executeSafeCommand').mockResolvedValue({
       stdout: 'OK',
       stderr: '',
@@ -90,6 +92,7 @@ describe('Hermes & Claude Security and Permission Boundaries', () => {
 
   it('Hermes with unrestricted policy includes --yolo only when explicitly enabled', async () => {
     const hermes = new HermesAdapter();
+    vi.spyOn(hermes as unknown as { findBinary: () => Promise<string> }, 'findBinary').mockResolvedValue('/mock/bin/hermes');
     const executeSafeSpy = vi.spyOn(adapterSdk, 'executeSafeCommand').mockResolvedValue({
       stdout: 'OK',
       stderr: '',
@@ -130,6 +133,7 @@ describe('Hermes & Claude Security and Permission Boundaries', () => {
 
   it('Hermes handles permission_required error classification properly', async () => {
     const hermes = new HermesAdapter();
+    vi.spyOn(hermes as unknown as { findBinary: () => Promise<string> }, 'findBinary').mockResolvedValue('/mock/bin/hermes');
     const executeSafeSpy = vi.spyOn(adapterSdk, 'executeSafeCommand').mockResolvedValue({
       stdout: '',
       stderr: 'Error: Command execution approval required for dangerous operation.',
@@ -165,6 +169,7 @@ describe('Hermes & Claude Security and Permission Boundaries', () => {
 
   it('Hermes handles hook_consent_required error classification properly', async () => {
     const hermes = new HermesAdapter();
+    vi.spyOn(hermes as unknown as { findBinary: () => Promise<string> }, 'findBinary').mockResolvedValue('/mock/bin/hermes');
     const executeSafeSpy = vi.spyOn(adapterSdk, 'executeSafeCommand').mockResolvedValue({
       stdout: '',
       stderr: 'Unseen hook not approved. Run with prompt or accept-hooks.',
@@ -200,6 +205,7 @@ describe('Hermes & Claude Security and Permission Boundaries', () => {
 
   it('ClaudeCodeAdapter must NOT contain --dangerously-skip-permissions by default', async () => {
     const claude = new ClaudeCodeAdapter();
+    vi.spyOn(claude as unknown as { findBinary: () => Promise<string> }, 'findBinary').mockResolvedValue('/mock/bin/claude');
     const executeSafeSpy = vi.spyOn(adapterSdk, 'executeSafeCommand').mockResolvedValue({
       stdout: 'OK',
       stderr: '',
