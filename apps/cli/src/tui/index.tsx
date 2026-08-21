@@ -238,6 +238,8 @@ export const TuiApp: React.FC<TuiOptions> = ({ initialView = 'dashboard', initia
 };
 
 export async function renderTui(options?: TuiOptions): Promise<void> {
-  const { waitUntilExit } = render(React.createElement(TuiApp, options || {}));
+  const { waitUntilExit } = render(React.createElement(TuiApp, options || {}), {
+    patchConsole: false,
+  });
   await waitUntilExit();
 }

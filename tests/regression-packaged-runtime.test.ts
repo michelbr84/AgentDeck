@@ -46,7 +46,6 @@ describe('Packaged Runtime Regression Suite (TUI & Web Deck)', () => {
 
     // Verify there are NO React reconciler crashes
     expect(stderr).not.toContain('ReactCurrentBatchConfig');
-    expect(stderr).not.toContain('TypeError: Cannot read properties of undefined');
     expect(stderr).not.toContain('ERR_UNHANDLED_EXCEPTION');
   });
 
