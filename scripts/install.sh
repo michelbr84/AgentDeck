@@ -92,128 +92,104 @@ echo -e "${GREEN}✓ Initialized secure storage at $AGENTDECK_HOME (0700)${NC}"
 # 4. Resolve and Download Release Artifacts
 echo -e "${YELLOW}[4/5] Installing AgentDeck CLI...${NC}"
 
-# Check if running within a local repository source tree
-LOCAL_REPO=0
-if [ -n "${BASH_SOURCE[0]:-}" ] && [ -f "${BASH_SOURCE[0]}" ]; then
-  SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-  CANDIDATE_REPO="$(cd "$SCRIPT_DIR/.." && pwd)"
-  if [ -f "$CANDIDATE_REPO/pnpm-workspace.yaml" ] && [ -d "$CANDIDATE_REPO/apps/cli" ]; then
-    LOCAL_REPO=1
-    REPO_DIR="$CANDIDATE_REPO"
+# Remote release install via GitHub Releases
+echo "Resolving AgentDeck release from GitHub (${REPO})..."
+
+if [ -n "$TARGET_VERSION" ]; then
+  VERSION="$TARGET_VERSION"
+else
+  LATEST_JSON=$(curl -fsSL -H "Accept: application/vnd.github.v3+json" "https://api.github.com/repos/${REPO}/releases/latest" 2>/dev/null || true)
+  if [ -n "$LATEST_JSON" ]; then
+    RESOLVED_TAG=$(echo "$LATEST_JSON" | grep -o '"tag_name": "[^"]*"' | head -1 | cut -d'"' -f4 || true)
+    VERSION="${RESOLVED_TAG:-$FALLBACK_VERSION}"
+  else
+    VERSION="$FALLBACK_VERSION"
   fi
 fi
 
-if [ "$LOCAL_REPO" -eq 1 ]; then
-  echo -e "Detected local monorepo at $REPO_DIR. Building and linking packages..."
-  cd "$REPO_DIR"
-  if command -v pnpm >/dev/null 2>&1; then
-    pnpm install --frozen-lockfile || pnpm install
-    pnpm build
-    cd "$REPO_DIR/apps/cli"
-    npm link
-  else
-    npm install
-    npm run build
-  fi
+echo -e "Target version: ${CYAN}${VERSION}${NC}"
+
+TMP_DIR="$(mktemp -d /tmp/agentdeck-install-XXXXXX)"
+trap 'rm -rf "$TMP_DIR"' EXIT
+
+DOWNLOAD_BASE="https://github.com/${REPO}/releases/download/${VERSION}"
+CLI_TARBALL_URL="${DOWNLOAD_BASE}/agentdeck-cli.tar.gz"
+CHECKSUMS_URL="${DOWNLOAD_BASE}/checksums.txt"
+
+echo "Downloading ${CLI_TARBALL_URL}..."
+curl -fsSL -o "$TMP_DIR/agentdeck-cli.tar.gz" "$CLI_TARBALL_URL"
+
+echo "Downloading ${CHECKSUMS_URL}..."
+curl -fsSL -o "$TMP_DIR/checksums.txt" "$CHECKSUMS_URL"
+
+echo "Verifying SHA-256 checksum..."
+cd "$TMP_DIR"
+EXPECTED_HASH=$(grep "agentdeck-cli.tar.gz" checksums.txt | awk '{print $1}')
+
+if command -v sha256sum >/dev/null 2>&1; then
+  ACTUAL_HASH=$(sha256sum agentdeck-cli.tar.gz | awk '{print $1}')
+elif command -v shasum >/dev/null 2>&1; then
+  ACTUAL_HASH=$(shasum -a 256 agentdeck-cli.tar.gz | awk '{print $1}')
 else
-  # Remote release install via GitHub Releases
-  echo "Resolving AgentDeck release from GitHub (${REPO})..."
+  echo -e "${RED}Error: Neither sha256sum nor shasum is available for checksum verification.${NC}"
+  exit 1
+fi
 
-  if [ -n "$TARGET_VERSION" ]; then
-    VERSION="$TARGET_VERSION"
-  else
-    LATEST_JSON=$(curl -fsSL -H "Accept: application/vnd.github.v3+json" "https://api.github.com/repos/${REPO}/releases/latest" 2>/dev/null || true)
-    if [ -n "$LATEST_JSON" ]; then
-      RESOLVED_TAG=$(echo "$LATEST_JSON" | grep -o '"tag_name": "[^"]*"' | head -1 | cut -d'"' -f4 || true)
-      VERSION="${RESOLVED_TAG:-$FALLBACK_VERSION}"
-    else
-      VERSION="$FALLBACK_VERSION"
+if [ -z "$EXPECTED_HASH" ] || [ "$EXPECTED_HASH" != "$ACTUAL_HASH" ]; then
+  echo -e "${RED}Error: SHA-256 checksum mismatch!${NC}"
+  echo -e "Expected: $EXPECTED_HASH"
+  echo -e "Actual:   $ACTUAL_HASH"
+  exit 1
+fi
+echo -e "${GREEN}✓ Checksum verified successfully (${ACTUAL_HASH})${NC}"
+
+APP_DIR="$AGENTDECK_HOME/app"
+rm -rf "${APP_DIR:?}"/*
+tar -xzf "$TMP_DIR/agentdeck-cli.tar.gz" -C "$APP_DIR"
+
+echo "Installing production runtime dependencies..."
+cd "$APP_DIR"
+npm install --omit=dev --silent --no-audit --no-fund
+
+# Link internal @agentdeck packages into node_modules
+if [ -d "$APP_DIR/lib/@agentdeck" ]; then
+  mkdir -p "$APP_DIR/node_modules/@agentdeck"
+  for pkg_dir in "$APP_DIR"/lib/@agentdeck/*; do
+    if [ -d "$pkg_dir" ]; then
+      pkg_name="$(basename "$pkg_dir")"
+      target_link="$APP_DIR/node_modules/@agentdeck/$pkg_name"
+      rm -rf "$target_link"
+      ln -sf "$pkg_dir" "$target_link"
     fi
-  fi
+  done
+fi
 
-  echo -e "Target version: ${CYAN}${VERSION}${NC}"
-
-  TMP_DIR="$(mktemp -d /tmp/agentdeck-install-XXXXXX)"
-  trap 'rm -rf "$TMP_DIR"' EXIT
-
-  DOWNLOAD_BASE="https://github.com/${REPO}/releases/download/${VERSION}"
-  CLI_TARBALL_URL="${DOWNLOAD_BASE}/agentdeck-cli.tar.gz"
-  CHECKSUMS_URL="${DOWNLOAD_BASE}/checksums.txt"
-
-  echo "Downloading ${CLI_TARBALL_URL}..."
-  curl -fsSL -o "$TMP_DIR/agentdeck-cli.tar.gz" "$CLI_TARBALL_URL"
-
-  echo "Downloading ${CHECKSUMS_URL}..."
-  curl -fsSL -o "$TMP_DIR/checksums.txt" "$CHECKSUMS_URL"
-
-  echo "Verifying SHA-256 checksum..."
-  cd "$TMP_DIR"
-  EXPECTED_HASH=$(grep "agentdeck-cli.tar.gz" checksums.txt | awk '{print $1}')
-
-  if command -v sha256sum >/dev/null 2>&1; then
-    ACTUAL_HASH=$(sha256sum agentdeck-cli.tar.gz | awk '{print $1}')
-  elif command -v shasum >/dev/null 2>&1; then
-    ACTUAL_HASH=$(shasum -a 256 agentdeck-cli.tar.gz | awk '{print $1}')
-  else
-    echo -e "${RED}Error: Neither sha256sum nor shasum is available for checksum verification.${NC}"
-    exit 1
-  fi
-
-  if [ -z "$EXPECTED_HASH" ] || [ "$EXPECTED_HASH" != "$ACTUAL_HASH" ]; then
-    echo -e "${RED}Error: SHA-256 checksum mismatch!${NC}"
-    echo -e "Expected: $EXPECTED_HASH"
-    echo -e "Actual:   $ACTUAL_HASH"
-    exit 1
-  fi
-  echo -e "${GREEN}✓ Checksum verified successfully (${ACTUAL_HASH})${NC}"
-
-  APP_DIR="$AGENTDECK_HOME/app"
-  rm -rf "${APP_DIR:?}"/*
-  tar -xzf "$TMP_DIR/agentdeck-cli.tar.gz" -C "$APP_DIR"
-
-  echo "Installing production runtime dependencies..."
-  cd "$APP_DIR"
-  npm install --omit=dev --silent --no-audit --no-fund
-
-  # Link internal @agentdeck packages into node_modules
-  if [ -d "$APP_DIR/lib/@agentdeck" ]; then
-    mkdir -p "$APP_DIR/node_modules/@agentdeck"
-    for pkg_dir in "$APP_DIR"/lib/@agentdeck/*; do
-      if [ -d "$pkg_dir" ]; then
-        pkg_name="$(basename "$pkg_dir")"
-        rm -rf "$APP_DIR/node_modules/@agentdeck/$pkg_name"
-        ln -s "$pkg_dir" "$APP_DIR/node_modules/@agentdeck/$pkg_name"
-      fi
-    done
-  fi
-
-  # Create executable wrapper script in ~/.agentdeck/bin and ~/.local/bin
-  WRAPPER_SCRIPT="$AGENTDECK_HOME/bin/agentdeck"
-  cat <<'EOF' > "$WRAPPER_SCRIPT"
+# Create executable wrapper script in ~/.agentdeck/bin and ~/.local/bin
+WRAPPER_SCRIPT="$AGENTDECK_HOME/bin/agentdeck"
+cat <<'EOF' > "$WRAPPER_SCRIPT"
 #!/usr/bin/env bash
 set -e
 export NODE_ENV="${NODE_ENV:-production}"
 exec node "$HOME/.agentdeck/app/dist/index.js" "$@"
 EOF
-  chmod +x "$WRAPPER_SCRIPT"
+chmod +x "$WRAPPER_SCRIPT"
 
-  # Link to standard user binary PATH (~/.local/bin)
-  USER_BIN_DIR="$HOME/.local/bin"
-  mkdir -p "$USER_BIN_DIR"
-  ln -sf "$WRAPPER_SCRIPT" "$USER_BIN_DIR/agentdeck"
+# Link to standard user binary PATH (~/.local/bin)
+USER_BIN_DIR="$HOME/.local/bin"
+mkdir -p "$USER_BIN_DIR"
+ln -sf "$WRAPPER_SCRIPT" "$USER_BIN_DIR/agentdeck"
 
-  # Ensure ~/.local/bin or ~/.agentdeck/bin is in PATH for current session
-  export PATH="$USER_BIN_DIR:$AGENTDECK_HOME/bin:$PATH"
+# Ensure ~/.local/bin or ~/.agentdeck/bin is in PATH for current session
+export PATH="$USER_BIN_DIR:$AGENTDECK_HOME/bin:$PATH"
 
-  # Add to shell RC files if not present
-  for RC_FILE in "$HOME/.bashrc" "$HOME/.zshrc" "$HOME/.profile"; do
-    if [ -f "$RC_FILE" ]; then
-      if ! grep -q '\.agentdeck/bin\|\.local/bin' "$RC_FILE"; then
-        echo 'export PATH="$HOME/.local/bin:$HOME/.agentdeck/bin:$PATH"' >> "$RC_FILE"
-      fi
+# Add to shell RC files if not present
+for RC_FILE in "$HOME/.bashrc" "$HOME/.zshrc" "$HOME/.profile"; do
+  if [ -f "$RC_FILE" ]; then
+    if ! grep -q '\.agentdeck/bin\|\.local/bin' "$RC_FILE"; then
+      echo 'export PATH="$HOME/.local/bin:$HOME/.agentdeck/bin:$PATH"' >> "$RC_FILE"
     fi
-  done
-fi
+  fi
+done
 
 # 5. Verify Installation
 echo -e "${YELLOW}[5/5] Verifying installed binary...${NC}"
@@ -232,9 +208,9 @@ if ! command -v agentdeck >/dev/null 2>&1; then
   exit 1
 fi
 
-INSTALLED_VERSION=$(agentdeck --version 2>/dev/null || true)
-if [ -z "$INSTALLED_VERSION" ]; then
-  echo -e "${RED}Error: Installed 'agentdeck' binary failed execution test.${NC}"
+INSTALLED_VERSION=$(agentdeck --version 2>&1 || true)
+if [ -z "$INSTALLED_VERSION" ] || [[ "$INSTALLED_VERSION" == *"Error"* ]] || [[ "$INSTALLED_VERSION" == *"Cannot find"* ]]; then
+  echo -e "${RED}Error: Installed 'agentdeck' binary failed execution test: ${INSTALLED_VERSION}${NC}"
   exit 1
 fi
 
