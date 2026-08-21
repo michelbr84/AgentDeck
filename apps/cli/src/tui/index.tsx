@@ -1,30 +1,38 @@
 import React, { useState, useEffect } from 'react';
 import { render, Box, Text, useInput, useApp } from 'ink';
 import TextInput from 'ink-text-input';
-import { AgentDeckManager } from '@agentdeck/core';
+import { AgentDeckManager, MultiAgentOrchestrationEngine } from '@agentdeck/core';
 import { AgentInstallation, AgentInstance, Room, Message, Persona } from '@agentdeck/protocol';
 
+export type TuiView = 'dashboard' | 'agents' | 'rooms' | 'chat' | 'docs';
+
 export interface TuiOptions {
-  initialView?: 'dashboard' | 'agents' | 'rooms' | 'chat' | 'docs';
+  initialView?: TuiView;
   initialRoom?: string;
 }
 
+export const TUI_VIEWS: TuiView[] = ['dashboard', 'agents', 'rooms', 'chat', 'docs'];
+
 export const TuiApp: React.FC<TuiOptions> = ({ initialView = 'dashboard', initialRoom }) => {
   const { exit } = useApp();
-  const [view, setView] = useState<'dashboard' | 'agents' | 'rooms' | 'chat' | 'docs'>(initialView);
+  const [view, setView] = useState<TuiView>(initialView);
   const [manager, setManager] = useState<AgentDeckManager | null>(null);
+  const [engine, setEngine] = useState<MultiAgentOrchestrationEngine | null>(null);
   const [installations, setInstallations] = useState<AgentInstallation[]>([]);
   const [instances, setInstances] = useState<Array<AgentInstance & { persona: Persona; installation: AgentInstallation }>>([]);
   const [rooms, setRooms] = useState<Room[]>([]);
   const [currentRoom, setCurrentRoom] = useState<Room | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
   const [chatInput, setChatInput] = useState('');
+  const [isInputFocused, setIsInputFocused] = useState(false);
   const [statusMessage, setStatusMessage] = useState('Welcome to AgentDeck Terminal Deck');
+  const [isOrchestrating, setIsOrchestrating] = useState(false);
 
   useEffect(() => {
     async function init() {
       const mgr = await AgentDeckManager.create();
       setManager(mgr);
+      setEngine(new MultiAgentOrchestrationEngine(mgr));
       const instList = await mgr.scanAndSyncInstallations();
       setInstallations(instList);
       const instanceList = await mgr.listAgentInstances();
@@ -50,16 +58,55 @@ export const TuiApp: React.FC<TuiOptions> = ({ initialView = 'dashboard', initia
     init();
   }, [initialRoom]);
 
+  // Handle global and view navigation with terminal-portable keys
   useInput(
     (input, key) => {
-      if (key.escape || (key.ctrl && input === 'c')) {
+      // Exit conditions
+      if (key.escape) {
+        if (isInputFocused) {
+          setIsInputFocused(false);
+          setStatusMessage('Navigation mode active (1-5, Tab, Arrows). Press "i" or Enter on Chat to type.');
+          return;
+        }
         exit();
+        return;
       }
-      if (key.ctrl && input === '1') setView('dashboard');
-      if (key.ctrl && input === '2') setView('agents');
-      if (key.ctrl && input === '3') setView('rooms');
-      if (key.ctrl && input === '4') setView('chat');
-      if (key.ctrl && input === '5') setView('docs');
+      if (key.ctrl && input === 'c') {
+        exit();
+        return;
+      }
+
+      // If user is actively typing in the chat TextInput, do not hijack normal typing
+      if (isInputFocused) {
+        return;
+      }
+
+      // Focus chat input explicitly with 'i' or Enter when in Chat view
+      if (view === 'chat' && (input === 'i' || key.return)) {
+        setIsInputFocused(true);
+        setStatusMessage('Chat input focused. Type message and press Enter. (ESC to unfocus)');
+        return;
+      }
+
+      // Portable Numeric Navigation: 1..5
+      if (input === '1') setView('dashboard');
+      if (input === '2') setView('agents');
+      if (input === '3') setView('rooms');
+      if (input === '4') setView('chat');
+      if (input === '5') setView('docs');
+
+      // Tab / Shift+Tab or Left/Right Arrow Navigation across views
+      if (key.tab || key.rightArrow) {
+        const currentIndex = TUI_VIEWS.indexOf(view);
+        const nextIndex = key.shift
+          ? (currentIndex - 1 + TUI_VIEWS.length) % TUI_VIEWS.length
+          : (currentIndex + 1) % TUI_VIEWS.length;
+        setView(TUI_VIEWS[nextIndex] || 'dashboard');
+      } else if (key.leftArrow) {
+        const currentIndex = TUI_VIEWS.indexOf(view);
+        const prevIndex = (currentIndex - 1 + TUI_VIEWS.length) % TUI_VIEWS.length;
+        setView(TUI_VIEWS[prevIndex] || 'dashboard');
+      }
     },
     { isActive: process.stdin.isTTY }
   );
@@ -68,17 +115,37 @@ export const TuiApp: React.FC<TuiOptions> = ({ initialView = 'dashboard', initia
     if (!chatInput.trim() || !manager || !currentRoom) return;
     const content = chatInput.trim();
     setChatInput('');
+    setIsInputFocused(false);
 
-    const msg = await manager.postMessage({
-      roomId: currentRoom.id,
-      senderType: 'user',
-      senderId: 'local-user',
-      senderDisplayName: 'Michel (You)',
-      content,
-    });
+    setStatusMessage(`Sending prompt to #${currentRoom.name}...`);
+    setIsOrchestrating(true);
 
-    setMessages((prev) => [...prev, msg]);
-    setStatusMessage(`Message sent to room #${currentRoom.name}`);
+    try {
+      if (engine) {
+        const result = await engine.executeRun({
+          roomId: currentRoom.id,
+          triggerMessage: content,
+          senderUserId: 'local-user',
+          senderDisplayName: 'Michel (You)',
+        });
+        setMessages(result.messages);
+        setStatusMessage(`✔ Orchestration complete (${result.turnsExecuted} turns). Press "i" to type again.`);
+      } else {
+        const msg = await manager.postMessage({
+          roomId: currentRoom.id,
+          senderType: 'user',
+          senderId: 'local-user',
+          senderDisplayName: 'Michel (You)',
+          content,
+        });
+        setMessages((prev) => [...prev, msg]);
+        setStatusMessage(`Message posted to #${currentRoom.name}. Press "i" to type again.`);
+      }
+    } catch (err) {
+      setStatusMessage(`✖ Error executing turn: ${(err as Error).message}`);
+    } finally {
+      setIsOrchestrating(false);
+    }
   };
 
   return (
@@ -86,10 +153,10 @@ export const TuiApp: React.FC<TuiOptions> = ({ initialView = 'dashboard', initia
       {/* Header Bar */}
       <Box justifyContent="space-between" marginBottom={1}>
         <Text bold color="cyanBright">
-          ▲ AgentDeck v1.0.1 [Multi-Agent Terminal Deck]
+          ▲ AgentDeck v1.0.2 [Terminal Deck]
         </Text>
         <Text dimColor>
-          [Ctrl+1: Dashboard | Ctrl+2: Agents | Ctrl+3: Rooms | Ctrl+4: Chat | Ctrl+5: Docs | ESC: Exit]
+          [1:Dash | 2:Agents | 3:Rooms | 4:Chat | 5:Docs | Tab/Arrows:Nav | ESC:Exit]
         </Text>
       </Box>
 
@@ -169,7 +236,7 @@ export const TuiApp: React.FC<TuiOptions> = ({ initialView = 'dashboard', initia
       {view === 'chat' && (
         <Box flexDirection="column">
           <Text bold color="yellow">
-            💬 Live Room: #{currentRoom?.name || 'general'}
+            💬 Live Room: #{currentRoom?.name || 'general'} {isOrchestrating ? '(⚡ Orchestrating agents...)' : ''}
           </Text>
           <Box
             flexDirection="column"
@@ -180,11 +247,11 @@ export const TuiApp: React.FC<TuiOptions> = ({ initialView = 'dashboard', initia
             marginBottom={1}
           >
             {messages.length === 0 ? (
-              <Text dimColor>No messages in this room yet. Send a prompt below!</Text>
+              <Text dimColor>No messages in this room yet. Press "i" to write a prompt!</Text>
             ) : (
               messages.map((m) => (
                 <Text key={m.id}>
-                  <Text bold color="cyan">
+                  <Text bold color={m.senderType === 'user' ? 'cyan' : 'green'}>
                     [{m.senderDisplayName}]:
                   </Text>{' '}
                   {m.content}
@@ -193,16 +260,20 @@ export const TuiApp: React.FC<TuiOptions> = ({ initialView = 'dashboard', initia
             )}
           </Box>
           <Box>
-            <Text bold color="green">
-              Prompt {'>'}{' '}
+            <Text bold color={isInputFocused ? 'green' : 'gray'}>
+              Prompt {isInputFocused ? '[Typing >]' : '[Press "i" to type] >'}{' '}
             </Text>
             {process.stdin.isTTY ? (
-              <TextInput
-                value={chatInput}
-                onChange={setChatInput}
-                onSubmit={handleSendMessage}
-                placeholder="Type message or @agent tag..."
-              />
+              isInputFocused ? (
+                <TextInput
+                  value={chatInput}
+                  onChange={setChatInput}
+                  onSubmit={handleSendMessage}
+                  placeholder="Type message or @agent tag (Press ESC to unfocus)..."
+                />
+              ) : (
+                <Text dimColor>{chatInput || '(Inactive - Press "i" to focus and type)'}</Text>
+              )
             ) : (
               <Text dimColor>Interactive input requires TTY terminal.</Text>
             )}
@@ -243,3 +314,4 @@ export async function renderTui(options?: TuiOptions): Promise<void> {
   });
   await waitUntilExit();
 }
+

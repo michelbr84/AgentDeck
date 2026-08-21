@@ -323,7 +323,7 @@ export class PiAdapter implements AgentAdapter {
 
     const output = await executeSafeCommand({
       command: binPath,
-      args: ['--prompt', promptText],
+      args: ['--prompt', { value: promptText, type: 'opaque-user-content' }],
       cwd: context.workspaceDir || process.cwd(),
       abortSignal: context.abortSignal,
     });

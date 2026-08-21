@@ -14,7 +14,7 @@ const program = new Command();
 program
   .name('agentdeck')
   .description('Universal multi-agent manager, group chat deck, and orchestrator for Linux & Web')
-  .version('1.0.1');
+  .version('1.0.2');
 
 // 1. SETUP / ONBOARDING WIZARD
 program

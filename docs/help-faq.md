@@ -17,7 +17,9 @@ Interactive wizard to create a new agent instance with custom persona, system pr
 Edit existing agent instances or run targeted version upgrades.
 
 ### `agentdeck tui`
-Launches the interactive Ink-based Terminal User Interface with dashboard, chat deck, and prompt inspector.
+Launches the interactive Ink-based Terminal User Interface with dashboard, agent blueprint viewer, rooms list, live multi-agent chat deck, and offline docs browser.
+- Navigation: `1..5` (1: Dashboard, 2: Agents, 3: Rooms, 4: Chat, 5: Docs), `Tab`, `Shift+Tab`, `Left/Right Arrow`.
+- Chat Input: Press `i` or `Enter` in the Chat view to focus prompt input. Press `Esc` to unfocus and return to view navigation.
 
 ### `agentdeck web [--port <number>] [--lan] [--token <secret>]`
 Starts the AgentDeck REST and WebSocket daemon and serves the web application.

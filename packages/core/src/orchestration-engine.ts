@@ -285,12 +285,28 @@ export class MultiAgentOrchestrationEngine {
       options.onTurnComplete?.(instance.name, msg);
       return msg;
     } catch (err) {
+      const rawError = (err as Error).message;
+      let sanitizedReason = 'Agent execution failed.';
+      if (rawError.includes('not found') || rawError.includes('ENOENT')) {
+        sanitizedReason = 'Agent binary or executable was not found.';
+      } else if (rawError.includes('rejected by security policy')) {
+        sanitizedReason = 'Invalid runtime argument rejected by security policy.';
+      } else if (rawError.includes('timed out') || rawError.includes('aborted')) {
+        sanitizedReason = 'Execution timed out or was aborted.';
+      } else {
+        // Strip out any multiline content / composed prompts from error string
+        const firstLine = rawError.split('\n')[0]?.slice(0, 120) || 'Internal runtime error';
+        sanitizedReason = firstLine;
+      }
+
+      const userFacingErrorMessage = `⚠️ Agent execution failed.\nReason: ${sanitizedReason}\nRun \`agentdeck doctor ${instance.installation.definitionId}\` or inspect system logs for details.`;
+
       const fallbackMsg = await this.manager.postMessage({
         roomId: room.id,
         senderType: 'agent_instance',
         senderId: instance.id,
         senderDisplayName: `${instance.persona.avatarEmoji || '🤖'} ${instance.name}`,
-        content: `Error executing turn: ${(err as Error).message}`,
+        content: userFacingErrorMessage,
         contentType: 'text',
       });
       return fallbackMsg;

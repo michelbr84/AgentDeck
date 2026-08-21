@@ -1,6 +1,6 @@
 {
   "name": "agentdeck",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "Universal multi-agent manager, group chat deck, and orchestrator for Linux & Web",
   "type": "module",
   "bin": {

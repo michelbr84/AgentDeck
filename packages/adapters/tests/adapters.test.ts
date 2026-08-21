@@ -9,6 +9,7 @@ import {
   ClineAdapter,
   CodexAdapter,
 } from '../src/index.js';
+import { PromptCompositionTree } from '@agentdeck/protocol';
 
 describe('@agentdeck/adapters unit & fixture tests', () => {
   it('ClaudeCodeAdapter should declare compliant definitions and capabilities', () => {
@@ -96,6 +97,51 @@ describe('@agentdeck/adapters unit & fixture tests', () => {
       expect(report.agentDefinitionId).toBe(adapter.definition.id);
       expect(['healthy', 'degraded', 'unhealthy']).toContain(report.overallStatus);
       expect(report.diagnostics.length).toBeGreaterThan(0);
+    }
+  });
+
+  it('should handle multiline, Markdown, and formatted prompts across all 8 adapters via execute()', async () => {
+    const promptTree: PromptCompositionTree = {
+      instanceId: 'test-inst',
+      roomId: 'room-1',
+      createdAt: new Date().toISOString(),
+      totalEstimatedTokens: { source: 'estimated', value: 120 },
+      layers: [
+        {
+          id: 'layer-1',
+          order: 1,
+          layerName: 'Global Policy',
+          source: 'policy',
+          content: '### Global Policy\n1. Deliver high quality code.\n2. Ensure safe execution.',
+          redacted: false,
+        },
+      ],
+      finalRawPrompt: `### Global Policy\n1. Deliver high quality code.\n\n### Persona\nAtlas (Architect) [pt-BR]\n\n### Prompt\nPlease provide a multi-line comparison:\n1. Redis Redlock\n2. Postgres pg_advisory_lock\n\nShow sample SQL & Bash commands with pipes | and semicolons;`,
+    };
+
+    const adapters = [
+      new ClaudeCodeAdapter(),
+      new HermesAdapter(),
+      new OpenClawAdapter(),
+      new GarraIAAdapter(),
+      new PiAdapter(),
+      new KiloAdapter(),
+      new ClineAdapter(),
+      new CodexAdapter(),
+    ];
+
+    for (const adapter of adapters) {
+      const result = await adapter.execute({
+        runId: 'run-test-multiline',
+        sessionId: `session-${adapter.definition.id}`,
+        promptTree,
+        workspaceDir: process.cwd(),
+      });
+
+      expect(result).toBeDefined();
+      expect(typeof result.content).toBe('string');
+      expect(result.content.length).toBeGreaterThan(0);
+      expect(result.tokensUsed.total.value).toBeGreaterThan(0);
     }
   });
 });

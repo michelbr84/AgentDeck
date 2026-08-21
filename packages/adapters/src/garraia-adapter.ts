@@ -369,7 +369,11 @@ export class GarraIAAdapter implements AgentAdapter {
     const output = await executeSafeCommand(
       {
         command: binPath,
-        args: ['run', '--prompt', promptText],
+        args: [
+          'run',
+          '--prompt',
+          { value: promptText, type: 'opaque-user-content' },
+        ],
         cwd: context.workspaceDir || process.cwd(),
         abortSignal: context.abortSignal,
         timeoutMs: 300000,

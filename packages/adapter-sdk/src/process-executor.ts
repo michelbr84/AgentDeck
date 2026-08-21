@@ -1,9 +1,16 @@
 import { spawn, SpawnOptions } from 'node:child_process';
-import { isSafeCliArgument } from '@agentdeck/security';
+import {
+  isSafeCliArgument,
+  isSafeOpaqueContentArgument,
+  isSafePathArgument,
+  CliArgumentSpec,
+} from '@agentdeck/security';
+
+export type CommandArgument = string | CliArgumentSpec;
 
 export interface CommandSpec {
   command: string;
-  args: string[];
+  args: CommandArgument[];
   cwd?: string;
   env?: Record<string, string>;
   timeoutMs?: number;
@@ -22,6 +29,39 @@ export interface StreamCallbacks {
 }
 
 /**
+ * Normalizes command argument into string and validates against security policy based on type.
+ */
+function resolveAndValidateArg(arg: CommandArgument): string {
+  if (typeof arg === 'string') {
+    if (!isSafeCliArgument(arg)) {
+      throw new Error(`Unsafe CLI argument rejected by security policy (structural): ${arg.slice(0, 100)}`);
+    }
+    return arg;
+  }
+
+  const { value, type } = arg;
+  if (type === 'opaque-user-content') {
+    if (!isSafeOpaqueContentArgument(value)) {
+      throw new Error('Unsafe CLI argument rejected by security policy: Opaque content contains NUL bytes or exceeds size limit');
+    }
+    return value;
+  }
+
+  if (type === 'path') {
+    if (!isSafePathArgument(value)) {
+      throw new Error(`Unsafe CLI argument rejected by security policy (path): ${value.slice(0, 100)}`);
+    }
+    return value;
+  }
+
+  // default: structural
+  if (!isSafeCliArgument(value)) {
+    throw new Error(`Unsafe CLI argument rejected by security policy (structural): ${value.slice(0, 100)}`);
+  }
+  return value;
+}
+
+/**
  * Executes a subprocess safely without a shell (shell: false) and with strict argument validation.
  */
 export async function executeSafeCommand(
@@ -29,11 +69,7 @@ export async function executeSafeCommand(
   stream?: StreamCallbacks
 ): Promise<CommandOutput> {
   // Validate CLI arguments
-  for (const arg of spec.args) {
-    if (!isSafeCliArgument(arg)) {
-      throw new Error(`Unsafe CLI argument rejected by security policy: ${arg}`);
-    }
-  }
+  const sanitizedArgs: string[] = spec.args.map(resolveAndValidateArg);
 
   return new Promise((resolve, reject) => {
     const spawnOpts: SpawnOptions = {
@@ -44,10 +80,11 @@ export async function executeSafeCommand(
 
     let child: ReturnType<typeof spawn>;
     try {
-      child = spawn(spec.command, spec.args, spawnOpts);
+      child = spawn(spec.command, sanitizedArgs, spawnOpts);
     } catch (err) {
       return reject(new Error(`Failed to spawn process "${spec.command}": ${(err as Error).message}`));
     }
+
 
     let stdout = '';
     let stderr = '';

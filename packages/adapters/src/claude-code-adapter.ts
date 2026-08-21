@@ -380,7 +380,11 @@ export class ClaudeCodeAdapter implements AgentAdapter {
     }
 
     const promptText = context.promptTree.finalRawPrompt;
-    const args = ['-p', promptText, '--dangerously-skip-permissions'];
+    const args: Array<string | { value: string; type: 'opaque-user-content' }> = [
+      '-p',
+      { value: promptText, type: 'opaque-user-content' },
+      '--dangerously-skip-permissions',
+    ];
 
     let fullOutput = '';
     const output = await executeSafeCommand(

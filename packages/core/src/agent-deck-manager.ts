@@ -251,6 +251,23 @@ export class AgentDeckManager {
     };
   }
 
+  public async getPersona(id: string): Promise<Persona | null> {
+    const r = await this.db.db.selectFrom('personas').selectAll().where('id', '=', id).executeTakeFirst();
+    if (!r) return null;
+    return {
+      id: r.id,
+      name: r.name,
+      role: r.role,
+      language: r.language,
+      systemPromptOverlay: r.system_prompt,
+      avatarEmoji: r.avatar,
+      responseStyle: r.response_style || undefined,
+      isTemplate: r.is_template === 1,
+      createdAt: r.created_at,
+      updatedAt: r.updated_at,
+    };
+  }
+
   public async updatePersona(id: string, updates: Partial<Persona>): Promise<void> {
     await this.db.db
       .updateTable('personas')

@@ -66,7 +66,7 @@ describe('@agentdeck/core MultiAgentOrchestrationEngine', () => {
     db.close();
   });
 
-  it('should execute Panel / Broadcast mode across all agents', async () => {
+  it('should execute Panel / Broadcast mode across all agents with multiline prompts', async () => {
     const db = new AgentDeckDatabase({ dbPath: ':memory:', inMemory: true });
     await db.migrate();
     const manager = AgentDeckManager.createWithDatabase(db);
@@ -77,7 +77,7 @@ describe('@agentdeck/core MultiAgentOrchestrationEngine', () => {
       name: 'Reviewer',
       role: 'Code Reviewer',
       language: 'pt-BR',
-      systemPromptOverlay: 'Review code strictly',
+      systemPromptOverlay: 'Review code strictly and suggest improvements',
       avatarEmoji: '🔍',
       isTemplate: false,
     });
@@ -102,9 +102,18 @@ describe('@agentdeck/core MultiAgentOrchestrationEngine', () => {
       memberUserIds: [user.id],
     });
 
+    const complexMultilineTrigger = `### Panel Code Review Request
+Please evaluate the following snippet:
+\`\`\`bash
+find . -name "*.log" | xargs rm -f; echo "Cleaned"
+\`\`\`
+Questions:
+1. Is this safe for filenames with spaces?
+2. What alternative command is recommended?`;
+
     const result = await engine.executeRun({
       roomId: room.id,
-      triggerMessage: 'Panel review request for PR #42',
+      triggerMessage: complexMultilineTrigger,
       senderUserId: user.id,
       senderDisplayName: 'Michel',
     });
@@ -112,7 +121,65 @@ describe('@agentdeck/core MultiAgentOrchestrationEngine', () => {
     expect(result.status).toBe('completed');
     expect(result.turnsExecuted).toBe(2);
     expect(result.messages.length).toBe(3); // 1 user + 2 agents
+    expect(result.messages[1]!.content).toBeDefined();
+    expect(result.messages[2]!.content).toBeDefined();
 
+    db.close();
+  });
+
+  it('should sanitize error output when agent adapter fails without leaking prompt trees', async () => {
+    const db = new AgentDeckDatabase({ dbPath: ':memory:', inMemory: true });
+    await db.migrate();
+    const manager = AgentDeckManager.createWithDatabase(db);
+    const engine = new MultiAgentOrchestrationEngine(manager);
+
+    const installations = await manager.scanAndSyncInstallations();
+    const mockInst = installations[0]!;
+
+    const persona = await manager.createPersona({
+      name: 'FailingAgent',
+      role: 'Tester',
+      language: 'en-US',
+      systemPromptOverlay: 'SUPER_SECRET_INTERNAL_SYSTEM_PROMPT_LAYER_THAT_SHOULD_NOT_LEAK',
+      avatarEmoji: '💥',
+      isTemplate: false,
+    });
+
+    const inst = await manager.createAgentInstance({
+      installationId: mockInst.id,
+      personaId: persona.id,
+      name: 'FailInst',
+    });
+
+    // Temporarily mock adapter to throw an error with secret content
+    const adapter = manager.getAdapter(mockInst.definitionId)!;
+    const origExecute = adapter.execute.bind(adapter);
+    adapter.execute = async () => {
+      throw new Error('Command failed: ENOENT binary not found\nPrompt: SUPER_SECRET_INTERNAL_SYSTEM_PROMPT_LAYER_THAT_SHOULD_NOT_LEAK');
+    };
+
+    const user = await manager.createOrGetLocalProfile('Michel', '👨‍💻');
+    const room = await manager.createRoom({
+      name: 'fail-room',
+      mode: 'mention',
+      memberInstanceIds: [inst.id],
+      memberUserIds: [user.id],
+    });
+
+    const result = await engine.executeRun({
+      roomId: room.id,
+      triggerMessage: '@FailInst hello test error',
+      senderUserId: user.id,
+      senderDisplayName: 'Michel',
+    });
+
+    expect(result.messages.length).toBe(2);
+    const errorMessage = result.messages[1]!.content;
+    expect(errorMessage).toContain('⚠️ Agent execution failed');
+    expect(errorMessage).toContain('Reason: Agent binary or executable was not found.');
+    expect(errorMessage).not.toContain('SUPER_SECRET_INTERNAL_SYSTEM_PROMPT_LAYER_THAT_SHOULD_NOT_LEAK');
+
+    adapter.execute = origExecute;
     db.close();
   });
 

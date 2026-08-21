@@ -387,7 +387,11 @@ export class HermesAdapter implements AgentAdapter {
     const output = await executeSafeCommand(
       {
         command: binPath,
-        args: ['chat', '--prompt', promptText],
+        args: [
+          'chat',
+          '--prompt',
+          { value: promptText, type: 'opaque-user-content' },
+        ],
         cwd: context.workspaceDir || process.cwd(),
         abortSignal: context.abortSignal,
         timeoutMs: 300000,

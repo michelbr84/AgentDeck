@@ -322,7 +322,7 @@ export class ClineAdapter implements AgentAdapter {
 
     const output = await executeSafeCommand({
       command: binPath,
-      args: ['-y', '--prompt', promptText],
+      args: ['-y', '--prompt', { value: promptText, type: 'opaque-user-content' }],
       cwd: context.workspaceDir || process.cwd(),
       abortSignal: context.abortSignal,
     });

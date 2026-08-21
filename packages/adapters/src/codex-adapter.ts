@@ -308,7 +308,7 @@ export class CodexAdapter implements AgentAdapter {
 
     const output = await executeSafeCommand({
       command: binPath,
-      args: ['exec', '--prompt', promptText],
+      args: ['exec', '--prompt', { value: promptText, type: 'opaque-user-content' }],
       cwd: context.workspaceDir || process.cwd(),
       abortSignal: context.abortSignal,
     });

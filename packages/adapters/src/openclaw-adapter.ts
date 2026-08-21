@@ -375,9 +375,9 @@ export class OpenClawAdapter implements AgentAdapter {
     const isMjs = binPath.endsWith('.mjs') || binPath.endsWith('.js');
     const cmd = isMjs ? 'node' : binPath;
     const promptText = context.promptTree.finalRawPrompt;
-    const args = isMjs
-      ? [binPath, 'chat', '--prompt', promptText]
-      : ['chat', '--prompt', promptText];
+    const args: Array<string | { value: string; type: 'opaque-user-content' }> = isMjs
+      ? [binPath, 'chat', '--prompt', { value: promptText, type: 'opaque-user-content' }]
+      : ['chat', '--prompt', { value: promptText, type: 'opaque-user-content' }];
 
     let fullOutput = '';
     const output = await executeSafeCommand(

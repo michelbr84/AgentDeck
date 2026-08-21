@@ -108,13 +108,46 @@ export function timingSafeEqual(a: string, b: string): boolean {
 }
 
 // ==========================================
-// 4. SAFE SHELL ARGUMENT VALIDATION
+// 4. SAFE SHELL & PROCESS ARGUMENT VALIDATION
 // ==========================================
+export type CliArgumentType = 'structural' | 'path' | 'opaque-user-content';
+
+export interface CliArgumentSpec {
+  value: string;
+  type: CliArgumentType;
+}
+
 /**
- * Validates that an argument does not contain dangerous shell command chaining characters.
+ * Validates structural / trusted CLI arguments against dangerous shell chaining characters.
  */
 export function isSafeCliArgument(arg: string): boolean {
   // Disallow shell control metacharacters in strict CLI argument modes
   const dangerousChars = /[;&|`$><\n\r\0]/;
   return !dangerousChars.test(arg);
 }
+
+/**
+ * Validates opaque user content arguments passed to spawn(..., { shell: false }).
+ * Allows spaces, newlines, quotes, $, ;, |, >, Markdown, JSON, Unicode.
+ * Strictly rejects NUL bytes (\0) and imposes reasonable size limits (default 10MB).
+ */
+export function isSafeOpaqueContentArgument(arg: string, maxBytes = 10 * 1024 * 1024): boolean {
+  if (arg.includes('\0')) {
+    return false;
+  }
+  if (Buffer.byteLength(arg, 'utf8') > maxBytes) {
+    return false;
+  }
+  return true;
+}
+
+/**
+ * Validates path CLI arguments.
+ */
+export function isSafePathArgument(arg: string): boolean {
+  if (arg.includes('\0')) return false;
+  // Disallow shell chaining metacharacters in path arguments
+  const dangerousChars = /[;&|`$><\n\r]/;
+  return !dangerousChars.test(arg);
+}
+
