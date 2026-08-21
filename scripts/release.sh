@@ -28,23 +28,59 @@ echo -e "${YELLOW}Packaging CLI bundle with monorepo internal packages...${NC}"
 
 # 1. Copy CLI app
 cp -r "$ROOT_DIR/apps/cli/dist" "$BUNDLE_STAGE_DIR/dist"
-cp "$ROOT_DIR/apps/cli/package.json" "$BUNDLE_STAGE_DIR/package.json"
 
-# 2. Bundle internal workspace packages under node_modules/@agentdeck
-mkdir -p "$BUNDLE_STAGE_DIR/node_modules/@agentdeck"
+# Sanitize package.json for standalone consumption
+node -e '
+const fs = require("fs");
+const pkg = JSON.parse(fs.readFileSync("apps/cli/package.json", "utf8"));
+const cleanedDeps = {};
+for (const [k, v] of Object.entries(pkg.dependencies || {})) {
+  if (!k.startsWith("@agentdeck/")) {
+    cleanedDeps[k] = v;
+  }
+}
+const extDeps = {
+  "zod": "^3.24.2",
+  "better-sqlite3": "^11.8.1",
+  "kysely": "^0.27.5",
+  "fastify": "^5.2.1",
+  "@fastify/cors": "^10.0.2",
+  "@fastify/websocket": "^11.0.2",
+  "@fastify/static": "^8.1.1",
+  "ws": "^8.18.0"
+};
+pkg.dependencies = { ...cleanedDeps, ...extDeps };
+delete pkg.devDependencies;
+fs.writeFileSync("'"$BUNDLE_STAGE_DIR"'/package.json", JSON.stringify(pkg, null, 2));
+'
+
+# 2. Bundle internal workspace packages under lib/@agentdeck
+mkdir -p "$BUNDLE_STAGE_DIR/lib/@agentdeck"
 
 for pkg in protocol security database adapter-sdk adapters core shared server; do
   PKG_DIR="$ROOT_DIR/packages/$pkg"
-  STAGE_PKG_DIR="$BUNDLE_STAGE_DIR/node_modules/@agentdeck/$pkg"
+  STAGE_PKG_DIR="$BUNDLE_STAGE_DIR/lib/@agentdeck/$pkg"
   mkdir -p "$STAGE_PKG_DIR"
-  cp "$PKG_DIR/package.json" "$STAGE_PKG_DIR/package.json"
+  node -e '
+  const fs = require("fs");
+  const pkg = JSON.parse(fs.readFileSync("'"$PKG_DIR"'/package.json", "utf8"));
+  delete pkg.devDependencies;
+  const cleaned = {};
+  for (const [k, v] of Object.entries(pkg.dependencies || {})) {
+    if (!k.startsWith("@agentdeck/")) {
+      cleaned[k] = v;
+    }
+  }
+  pkg.dependencies = cleaned;
+  fs.writeFileSync("'"$STAGE_PKG_DIR"'/package.json", JSON.stringify(pkg, null, 2));
+  '
   if [ -d "$PKG_DIR/dist" ]; then
     cp -r "$PKG_DIR/dist" "$STAGE_PKG_DIR/dist"
   fi
 done
 
 # Create release tarball for CLI
-tar -czf "$DIST_DIR/agentdeck-cli.tar.gz" -C "$BUNDLE_STAGE_DIR" package.json dist node_modules
+tar -czf "$DIST_DIR/agentdeck-cli.tar.gz" -C "$BUNDLE_STAGE_DIR" package.json dist lib
 
 # Clean up stage
 rm -rf "$BUNDLE_STAGE_DIR"

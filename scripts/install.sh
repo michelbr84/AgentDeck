@@ -175,6 +175,18 @@ else
   cd "$APP_DIR"
   npm install --omit=dev --silent --no-audit --no-fund
 
+  # Link internal @agentdeck packages into node_modules
+  if [ -d "$APP_DIR/lib/@agentdeck" ]; then
+    mkdir -p "$APP_DIR/node_modules/@agentdeck"
+    for pkg_dir in "$APP_DIR"/lib/@agentdeck/*; do
+      if [ -d "$pkg_dir" ]; then
+        pkg_name="$(basename "$pkg_dir")"
+        rm -rf "$APP_DIR/node_modules/@agentdeck/$pkg_name"
+        ln -s "$pkg_dir" "$APP_DIR/node_modules/@agentdeck/$pkg_name"
+      fi
+    done
+  fi
+
   # Create executable wrapper script in ~/.agentdeck/bin and ~/.local/bin
   WRAPPER_SCRIPT="$AGENTDECK_HOME/bin/agentdeck"
   cat <<'EOF' > "$WRAPPER_SCRIPT"
