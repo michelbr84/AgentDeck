@@ -2,8 +2,8 @@ import { describe, it, expect } from 'vitest';
 import { TUI_VIEWS, type TuiView } from '../../apps/cli/src/tui/index.js';
 
 describe('TUI Portable Key Navigation & Focus Contract', () => {
-  it('should define stable navigation views and ordered sequence', () => {
-    expect(TUI_VIEWS).toEqual(['dashboard', 'agents', 'rooms', 'chat', 'docs']);
+  it('should define stable navigation views and ordered sequence including personas and instances', () => {
+    expect(TUI_VIEWS).toEqual(['dashboard', 'agents', 'personas', 'instances', 'rooms', 'chat', 'docs']);
   });
 
   it('should calculate correct next and previous views for Tab and Shift+Tab navigation', () => {
@@ -17,7 +17,9 @@ describe('TUI Portable Key Navigation & Focus Contract', () => {
 
     // Forward Tab
     expect(getNextView('dashboard', false)).toBe('agents');
-    expect(getNextView('agents', false)).toBe('rooms');
+    expect(getNextView('agents', false)).toBe('personas');
+    expect(getNextView('personas', false)).toBe('instances');
+    expect(getNextView('instances', false)).toBe('rooms');
     expect(getNextView('rooms', false)).toBe('chat');
     expect(getNextView('chat', false)).toBe('docs');
     expect(getNextView('docs', false)).toBe('dashboard');
@@ -26,20 +28,24 @@ describe('TUI Portable Key Navigation & Focus Contract', () => {
     expect(getNextView('dashboard', true)).toBe('docs');
     expect(getNextView('docs', true)).toBe('chat');
     expect(getNextView('chat', true)).toBe('rooms');
-    expect(getNextView('rooms', true)).toBe('agents');
+    expect(getNextView('rooms', true)).toBe('instances');
+    expect(getNextView('instances', true)).toBe('personas');
+    expect(getNextView('personas', true)).toBe('agents');
     expect(getNextView('agents', true)).toBe('dashboard');
   });
 
-  it('should map numeric keys 1..5 directly to appropriate views', () => {
+  it('should map numeric keys 1..7 directly to appropriate views', () => {
     const numMap: Record<string, TuiView> = {
       '1': 'dashboard',
       '2': 'agents',
-      '3': 'rooms',
-      '4': 'chat',
-      '5': 'docs',
+      '3': 'personas',
+      '4': 'instances',
+      '5': 'rooms',
+      '6': 'chat',
+      '7': 'docs',
     };
 
-    for (let i = 1; i <= 5; i++) {
+    for (let i = 1; i <= 7; i++) {
       expect(numMap[String(i)]).toBe(TUI_VIEWS[i - 1]);
     }
   });

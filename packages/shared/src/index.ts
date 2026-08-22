@@ -1,6 +1,9 @@
 import os from 'node:os';
 import path from 'node:path';
 
+export { AGENTDECK_VERSION } from './version.js';
+export { AGENTDECK_BUILD_INFO, type AgentDeckBuildInfo } from './build-info.js';
+
 export const AGENTDECK_PATHS = {
   get HOME_DIR() {
     return path.join(os.homedir(), '.agentdeck');

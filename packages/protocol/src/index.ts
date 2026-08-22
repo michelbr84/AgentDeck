@@ -121,6 +121,7 @@ export const AgentInstanceSchema = z.object({
   modelAlias: z.string().optional(),
   workspaceDir: z.string().optional(),
   permissionTier: z.enum(['safe', 'developer', 'autonomous', 'custom']).default('developer'),
+  isActive: z.boolean().default(true),
   createdAt: z.string().datetime(),
   updatedAt: z.string().datetime(),
 });
@@ -173,6 +174,7 @@ export const RoomSchema = z.object({
   name: z.string().min(1),
   description: z.string().default(''),
   mode: RoomModeSchema.default('mention'),
+  defaultAgentInstanceId: IdSchema.nullable().optional(),
   maxTurnsPerRun: z.number().int().positive().default(10),
   maxRuntimeSec: z.number().int().positive().default(600),
   maxCostUSD: z.number().positive().optional(),
@@ -196,6 +198,47 @@ export const RoomMemberSchema = z.object({
 export type RoomMember = z.infer<typeof RoomMemberSchema>;
 
 // ==========================================
+// 7.1 CHAT DELIVERY TRACE & ROUTING DIAGNOSTICS
+// ==========================================
+export const ChatDeliveryStateSchema = z.enum([
+  'persisted',
+  'routing',
+  'running',
+  'completed',
+  'failed',
+  'no_target',
+]);
+export type ChatDeliveryState = z.infer<typeof ChatDeliveryStateSchema>;
+
+export const ChatDeliveryReasonCodeSchema = z.enum([
+  'direct_mention',
+  'all_mention',
+  'single_agent_auto',
+  'room_default_agent',
+  'panel_broadcast',
+  'debate_turn',
+  'coordinator_delegate',
+  'zero_agents',
+  'multiple_agents_no_target',
+  'target_agent_inactive',
+  'target_agent_not_member',
+  'execution_error',
+]);
+export type ChatDeliveryReasonCode = z.infer<typeof ChatDeliveryReasonCodeSchema>;
+
+export const ChatDeliveryTraceSchema = z.object({
+  state: ChatDeliveryStateSchema,
+  reasonCode: ChatDeliveryReasonCodeSchema,
+  feedbackMessage: z.string(),
+  actionableHint: z.string().optional(),
+  targetInstanceIds: z.array(z.string()).default([]),
+  targetInstanceNames: z.array(z.string()).default([]),
+  roomMode: RoomModeSchema,
+  timestamp: z.string().datetime(),
+});
+export type ChatDeliveryTrace = z.infer<typeof ChatDeliveryTraceSchema>;
+
+// ==========================================
 // 8. MESSAGES & ORCHESTRATION RUNS
 // ==========================================
 export const MessageContentTypeSchema = z.enum(['text', 'markdown', 'tool_call', 'tool_result', 'artifact', 'system']);
@@ -211,6 +254,7 @@ export const MessageSchema = z.object({
   content: z.string(),
   contentType: MessageContentTypeSchema.default('text'),
   turnIndex: z.number().int().nonnegative().optional(),
+  deliveryTrace: ChatDeliveryTraceSchema.optional(),
   rawPayload: z.record(z.unknown()).optional(),
   createdAt: z.string().datetime(),
 });

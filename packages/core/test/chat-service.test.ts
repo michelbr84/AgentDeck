@@ -27,8 +27,12 @@ describe('ChatService & Zero-Agent Invariants', () => {
 
     expect(result.status).toBe('completed');
     expect(result.turnsExecuted).toBe(0);
-    expect(result.messages.length).toBe(1); // Only user message
+    // User message + Informative routing feedback system message
+    expect(result.messages.length).toBe(2);
     expect(result.messages[0]?.senderType).toBe('user');
     expect(result.messages[0]?.content).toBe('Hello to an empty room!');
+    expect(result.messages[1]?.contentType).toBe('system');
+    expect(result.deliveryTrace?.state).toBe('no_target');
+    expect(result.deliveryTrace?.reasonCode).toBe('zero_agents');
   });
 });

@@ -7,7 +7,7 @@ import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { AgentDeckManager, ChatService } from '@agentdeck/core';
 import { redactSecrets, timingSafeEqual } from '@agentdeck/security';
-import { AGENTDECK_PATHS } from '@agentdeck/shared';
+import { AGENTDECK_PATHS, AGENTDECK_VERSION, AGENTDECK_BUILD_INFO } from '@agentdeck/shared';
 import type { Persona, RoomMode } from '@agentdeck/protocol';
 import { WebSocket } from 'ws';
 export { WebSocket } from 'ws';
@@ -22,26 +22,29 @@ export interface ServerOptions {
 }
 
 export function resolveWebRoot(customWebRoot?: string): string | null {
-  if (customWebRoot && fs.existsSync(customWebRoot) && fs.existsSync(path.join(customWebRoot, 'index.html'))) {
-    return path.resolve(customWebRoot);
+  // 1. Explicit user override
+  if (customWebRoot) {
+    const resolved = path.resolve(customWebRoot);
+    if (fs.existsSync(resolved) && fs.existsSync(path.join(resolved, 'index.html'))) {
+      return resolved;
+    }
+    throw new Error(`Expected Web Deck bundle not found at specified --web-root: ${resolved}\nRun: pnpm --filter agentdeck-web build`);
   }
 
-  // 1. Check relative to ~/.agentdeck/app/web/dist (production installer layout)
-  if (fs.existsSync(AGENTDECK_PATHS.WEB_DIST_DIR) && fs.existsSync(path.join(AGENTDECK_PATHS.WEB_DIST_DIR, 'index.html'))) {
-    return path.resolve(AGENTDECK_PATHS.WEB_DIST_DIR);
-  }
-
-  // 2. Check relative to CLI or Server module location in bundle/install layout
+  // 2. Relative to server module location (Development / Monorepo or Packaged App)
   try {
     const currentFile = fileURLToPath(import.meta.url);
     const currentDir = path.dirname(currentFile);
-    // e.g. dist/index.js -> ../web/dist or ../../web/dist or ../../apps/web/dist
+    // Candidates in order of specificity:
+    // a. Monorepo repo root: apps/web/dist
+    // b. Packaged layout: ../../../../web/dist or ../../web/dist
     const candidates = [
-      path.resolve(currentDir, '..', 'web', 'dist'),
-      path.resolve(currentDir, '..', '..', 'web', 'dist'),
-      path.resolve(currentDir, '..', '..', '..', 'web', 'dist'),
       path.resolve(currentDir, '..', '..', 'apps', 'web', 'dist'),
       path.resolve(currentDir, '..', '..', '..', 'apps', 'web', 'dist'),
+      path.resolve(currentDir, '..', '..', '..', '..', 'web', 'dist'),
+      path.resolve(currentDir, '..', '..', '..', 'web', 'dist'),
+      path.resolve(currentDir, '..', '..', 'web', 'dist'),
+      path.resolve(currentDir, '..', 'web', 'dist'),
     ];
     for (const candidate of candidates) {
       if (fs.existsSync(candidate) && fs.existsSync(path.join(candidate, 'index.html'))) {
@@ -50,6 +53,11 @@ export function resolveWebRoot(customWebRoot?: string): string | null {
     }
   } catch {
     // ignore
+  }
+
+  // 3. Fallback to installed ~/.agentdeck/app/web/dist ONLY if packaged directory exists
+  if (fs.existsSync(AGENTDECK_PATHS.WEB_DIST_DIR) && fs.existsSync(path.join(AGENTDECK_PATHS.WEB_DIST_DIR, 'index.html'))) {
+    return path.resolve(AGENTDECK_PATHS.WEB_DIST_DIR);
   }
 
   return null;
@@ -93,7 +101,12 @@ export async function createAgentDeckServer(options?: ServerOptions): Promise<Ag
       root: webRoot,
       prefix: '/',
       index: 'index.html',
-      wildcard: false,
+      // wildcard MUST stay enabled: with `wildcard: false` @fastify/static
+      // enumerates the bundle directory once at registration time, so any asset
+      // produced by a later `pnpm --filter agentdeck-web build` 404s until the
+      // daemon is restarted (index.html is read per-request and would point at
+      // a hash the server refuses to serve -> blank Web Deck).
+      wildcard: true,
     });
 
     // SPA fallback: handle GET requests for non-API/non-WS routes
@@ -156,8 +169,20 @@ export async function createAgentDeckServer(options?: ServerOptions): Promise<Ag
   // REST API (v1)
   // ==========================================
 
-  // Health check
-  server.get('/health', async () => ({ status: 'healthy', version: '1.0.3' }));
+  // Health check & build info
+  server.get('/health', async () => ({
+    status: 'healthy',
+    version: AGENTDECK_VERSION,
+    build: AGENTDECK_BUILD_INFO,
+    webRoot: server.webRoot,
+  }));
+
+  server.get('/api/v1/build-info', async () => ({
+    version: AGENTDECK_VERSION,
+    buildId: AGENTDECK_BUILD_INFO.buildId,
+    builtAt: AGENTDECK_BUILD_INFO.builtAt,
+    webRoot: server.webRoot,
+  }));
 
   // List installations & scan
   server.get('/api/v1/agents', async () => {
@@ -191,10 +216,59 @@ export async function createAgentDeckServer(options?: ServerOptions): Promise<Ag
     return redactSecrets(list);
   });
 
+  server.get('/api/v1/personas/:id', async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const persona = await manager.getPersona(id);
+    if (!persona) {
+      return reply.status(404).send({ error: `Persona with ID ${id} not found` });
+    }
+    return redactSecrets(persona);
+  });
+
   server.post('/api/v1/personas', async (req) => {
     const body = req.body as Omit<Persona, 'id' | 'createdAt' | 'updatedAt'>;
     const persona = await manager.createPersona(body);
     return redactSecrets(persona);
+  });
+
+  server.put('/api/v1/personas/:id', async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const body = req.body as Partial<Omit<Persona, 'id' | 'createdAt' | 'updatedAt'>>;
+    await manager.updatePersona(id, body);
+    const updated = await manager.getPersona(id);
+    if (!updated) {
+      return reply.status(404).send({ error: `Persona with ID ${id} not found` });
+    }
+    return redactSecrets(updated);
+  });
+
+  server.delete('/api/v1/personas/:id', async (req, reply) => {
+    const { id } = req.params as { id: string };
+    try {
+      await manager.deletePersona(id);
+      return { success: true };
+    } catch (err: unknown) {
+      const error = err as { code?: string; message: string; statusCode?: number };
+      if (error.code === 'PERSONA_IN_USE' || error.statusCode === 409) {
+        return reply.status(409).send({
+          error: error.message,
+          code: 'PERSONA_IN_USE',
+        });
+      }
+      return reply.status(500).send({ error: error.message });
+    }
+  });
+
+  server.post('/api/v1/personas/:id/duplicate', async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const { newName } = (req.body as { newName?: string }) || {};
+    try {
+      const duplicated = await manager.duplicatePersona(id, newName);
+      return redactSecrets(duplicated);
+    } catch (err: unknown) {
+      const error = err as { message: string };
+      return reply.status(404).send({ error: error.message });
+    }
   });
 
   // Agent Instances
@@ -211,9 +285,39 @@ export async function createAgentDeckServer(options?: ServerOptions): Promise<Ag
       modelAlias?: string;
       workspaceDir?: string;
       permissionTier?: 'safe' | 'developer' | 'autonomous' | 'custom';
+      isActive?: boolean;
     };
     const instance = await manager.createAgentInstance(body);
     return redactSecrets(instance);
+  });
+
+  server.put('/api/v1/instances/:id', async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const body = req.body as {
+      name?: string;
+      personaId?: string;
+      modelAlias?: string | null;
+      workspaceDir?: string | null;
+      permissionTier?: 'safe' | 'developer' | 'autonomous' | 'custom';
+      isActive?: boolean;
+    };
+    await manager.updateAgentInstance(id, body);
+    const list = await manager.listAgentInstances();
+    const updated = list.find((i) => i.id === id);
+    if (!updated) {
+      return reply.status(404).send({ error: `AgentInstance with ID ${id} not found` });
+    }
+    return redactSecrets(updated);
+  });
+
+  server.post('/api/v1/instances/:id/toggle-active', async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const body = (req.body as { isActive?: boolean }) || {};
+    const updated = await manager.toggleAgentInstanceActive(id, body.isActive);
+    if (!updated) {
+      return reply.status(404).send({ error: `AgentInstance with ID ${id} not found` });
+    }
+    return redactSecrets(updated);
   });
 
   server.delete('/api/v1/instances/:id', async (req) => {
@@ -240,17 +344,81 @@ export async function createAgentDeckServer(options?: ServerOptions): Promise<Ag
     return redactSecrets(rooms);
   });
 
+  server.get('/api/v1/rooms/:id', async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const room = await manager.getRoom(id);
+    if (!room) {
+      return reply.status(404).send({ error: `Room with ID ${id} not found` });
+    }
+    return redactSecrets(room);
+  });
+
   server.post('/api/v1/rooms', async (req) => {
     const body = req.body as {
       name: string;
       description?: string;
       mode?: RoomMode;
+      defaultAgentInstanceId?: string | null;
       workspacePath?: string;
       memberInstanceIds?: string[];
       memberUserIds?: string[];
     };
     const room = await manager.createRoom(body);
     return redactSecrets(room);
+  });
+
+  server.put('/api/v1/rooms/:id', async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const body = req.body as {
+      name?: string;
+      description?: string;
+      mode?: RoomMode;
+      defaultAgentInstanceId?: string | null;
+      maxTurnsPerRun?: number;
+      maxRuntimeSec?: number;
+      maxCostUSD?: number;
+      workspacePath?: string;
+    };
+    await manager.updateRoom(id, body);
+    const updated = await manager.getRoom(id);
+    if (!updated) {
+      return reply.status(404).send({ error: `Room with ID ${id} not found` });
+    }
+    return redactSecrets(updated);
+  });
+
+  server.post('/api/v1/rooms/:id/default-agent', async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const body = req.body as { defaultAgentInstanceId: string | null };
+    await manager.setDefaultAgentInstanceForRoom(id, body.defaultAgentInstanceId ?? null);
+    const updated = await manager.getRoom(id);
+    if (!updated) {
+      return reply.status(404).send({ error: `Room with ID ${id} not found` });
+    }
+    return redactSecrets(updated);
+  });
+
+  server.get('/api/v1/rooms/:id/members', async (req) => {
+    const { id } = req.params as { id: string };
+    const members = await manager.listRoomMembers(id);
+    return redactSecrets(members);
+  });
+
+  server.post('/api/v1/rooms/:id/members', async (req) => {
+    const { id } = req.params as { id: string };
+    const body = req.body as {
+      memberType: 'agent_instance' | 'user';
+      memberId: string;
+      role?: 'owner' | 'admin' | 'participant' | 'observer';
+    };
+    const member = await manager.addRoomMember(id, body.memberType, body.memberId, body.role);
+    return redactSecrets(member);
+  });
+
+  server.delete('/api/v1/rooms/:id/members/:memberId', async (req) => {
+    const { id, memberId } = req.params as { id: string; memberId: string };
+    await manager.removeRoomMember(id, memberId);
+    return { success: true };
   });
 
   server.get('/api/v1/rooms/:id/messages', async (req) => {

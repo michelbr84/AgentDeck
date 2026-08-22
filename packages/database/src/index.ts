@@ -3,7 +3,7 @@ import { Kysely, SqliteDialect, sql } from 'kysely';
 import path from 'node:path';
 import { ensureSecureDirectory } from '@agentdeck/security';
 import { DatabaseSchema } from './schema.js';
-import { initialMigration, Migration } from './migrations.js';
+import { initialMigration, v104Migration, Migration } from './migrations.js';
 
 export * from './schema.js';
 export * from './migrations.js';
@@ -57,7 +57,7 @@ export class AgentDeckDatabase {
 
     const appliedVersions = new Set(appliedRows.map((r) => (r as unknown as { version: number }).version));
 
-    const migrations: Migration[] = [initialMigration];
+    const migrations: Migration[] = [initialMigration, v104Migration];
 
     for (const migration of migrations) {
       if (!appliedVersions.has(migration.version)) {

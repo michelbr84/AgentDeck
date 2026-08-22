@@ -2,6 +2,7 @@ import { AgentDeckDatabase, createDatabase } from '@agentdeck/database';
 import { EventBus } from './event-bus.js';
 import { PromptComposer } from './prompt-composer.js';
 import { TransactionalUpgradeEngine } from './upgrade-engine.js';
+import { MultiAgentOrchestrationEngine } from './orchestration-engine.js';
 import {
   ClaudeCodeAdapter,
   HermesAdapter,
@@ -23,6 +24,7 @@ import {
   Message,
   HealthCheckLevel,
   HealthReport,
+  ChatDeliveryTrace,
 } from '@agentdeck/protocol';
 import { ensureSecureDirectory } from '@agentdeck/security';
 import path from 'node:path';
@@ -38,6 +40,7 @@ export class AgentDeckManager {
   public readonly eventBus: EventBus;
   public readonly promptComposer: PromptComposer;
   public readonly upgradeEngine: TransactionalUpgradeEngine;
+  public readonly orchestrationEngine: MultiAgentOrchestrationEngine;
 
   private adapterRegistry = new Map<string, AgentAdapter>();
 
@@ -46,6 +49,7 @@ export class AgentDeckManager {
     this.eventBus = eventBus || new EventBus();
     this.promptComposer = new PromptComposer();
     this.upgradeEngine = new TransactionalUpgradeEngine(this.eventBus);
+    this.orchestrationEngine = new MultiAgentOrchestrationEngine(this);
 
     // Register built-in default adapters
     this.registerAdapter(new ClaudeCodeAdapter());
@@ -269,18 +273,58 @@ export class AgentDeckManager {
   }
 
   public async updatePersona(id: string, updates: Partial<Persona>): Promise<void> {
+    const patch: Record<string, unknown> = {
+      updated_at: new Date().toISOString(),
+    };
+    if (updates.name !== undefined) patch['name'] = updates.name;
+    if (updates.role !== undefined) patch['role'] = updates.role;
+    if (updates.language !== undefined) patch['language'] = updates.language;
+    if (updates.systemPromptOverlay !== undefined) patch['system_prompt'] = updates.systemPromptOverlay;
+    if (updates.avatarEmoji !== undefined) patch['avatar'] = updates.avatarEmoji;
+    if (updates.responseStyle !== undefined) patch['response_style'] = updates.responseStyle;
+    if (updates.isTemplate !== undefined) patch['is_template'] = updates.isTemplate ? 1 : 0;
+
     await this.db.db
       .updateTable('personas')
-      .set({
-        name: updates.name,
-        role: updates.role,
-        language: updates.language,
-        system_prompt: updates.systemPromptOverlay,
-        avatar: updates.avatarEmoji,
-        response_style: updates.responseStyle,
-      })
+      .set(patch as never)
       .where('id', '=', id)
       .execute();
+  }
+
+  public async deletePersona(id: string): Promise<void> {
+    const referencingInstances = await this.db.db
+      .selectFrom('agent_instances')
+      .select(['id', 'name'])
+      .where('persona_id', '=', id)
+      .where('is_active', '=', 1)
+      .execute();
+
+    if (referencingInstances.length > 0) {
+      const names = referencingInstances.map((i) => i.name).join(', ');
+      const err = new Error(`Cannot delete persona "${id}" because it is in use by active agent instance(s): ${names}`);
+      (err as unknown as Record<string, unknown>).code = 'PERSONA_IN_USE';
+      (err as unknown as Record<string, unknown>).statusCode = 409;
+      throw err;
+    }
+
+    await this.db.db.deleteFrom('personas').where('id', '=', id).execute();
+  }
+
+  public async duplicatePersona(id: string, newName?: string): Promise<Persona> {
+    const source = await this.getPersona(id);
+    if (!source) {
+      throw new Error(`Persona with ID "${id}" not found`);
+    }
+
+    return this.createPersona({
+      name: newName || `${source.name} (Copy)`,
+      role: source.role,
+      language: source.language,
+      systemPromptOverlay: source.systemPromptOverlay,
+      avatarEmoji: source.avatarEmoji,
+      responseStyle: source.responseStyle,
+      isTemplate: false,
+    });
   }
 
   // ==========================================
@@ -326,6 +370,7 @@ export class AgentDeckManager {
       modelAlias: r.model_alias || undefined,
       workspaceDir: r.workspace_dir || undefined,
       permissionTier: r.permission_tier as 'developer',
+      isActive: r.is_active !== 0,
       createdAt: r.created_at,
       updatedAt: r.updated_at,
       persona: {
@@ -368,9 +413,11 @@ export class AgentDeckManager {
     modelAlias?: string;
     workspaceDir?: string;
     permissionTier?: 'safe' | 'developer' | 'autonomous' | 'custom';
+    isActive?: boolean;
   }): Promise<AgentInstance> {
     const id = `instance-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`;
     const now = new Date().toISOString();
+    const activeVal = params.isActive !== undefined ? (params.isActive ? 1 : 0) : 1;
 
     await this.db.db
       .insertInto('agent_instances')
@@ -382,6 +429,7 @@ export class AgentDeckManager {
         model_alias: params.modelAlias || null,
         workspace_dir: params.workspaceDir || null,
         permission_tier: params.permissionTier || 'developer',
+        is_active: activeVal,
       })
       .execute();
 
@@ -393,7 +441,71 @@ export class AgentDeckManager {
       modelAlias: params.modelAlias,
       workspaceDir: params.workspaceDir,
       permissionTier: params.permissionTier || 'developer',
+      isActive: activeVal === 1,
       createdAt: now,
+      updatedAt: now,
+    };
+  }
+
+  public async updateAgentInstance(
+    id: string,
+    updates: {
+      name?: string;
+      personaId?: string;
+      modelAlias?: string | null;
+      workspaceDir?: string | null;
+      permissionTier?: 'safe' | 'developer' | 'autonomous' | 'custom';
+      isActive?: boolean;
+    }
+  ): Promise<void> {
+    const patch: Record<string, unknown> = {
+      updated_at: new Date().toISOString(),
+    };
+    if (updates.name !== undefined) patch['name'] = updates.name;
+    if (updates.personaId !== undefined) patch['persona_id'] = updates.personaId;
+    if (updates.modelAlias !== undefined) patch['model_alias'] = updates.modelAlias;
+    if (updates.workspaceDir !== undefined) patch['workspace_dir'] = updates.workspaceDir;
+    if (updates.permissionTier !== undefined) patch['permission_tier'] = updates.permissionTier;
+    if (updates.isActive !== undefined) patch['is_active'] = updates.isActive ? 1 : 0;
+
+    await this.db.db
+      .updateTable('agent_instances')
+      .set(patch as never)
+      .where('id', '=', id)
+      .execute();
+  }
+
+  public async toggleAgentInstanceActive(id: string, isActive?: boolean): Promise<AgentInstance | null> {
+    const existing = await this.db.db
+      .selectFrom('agent_instances')
+      .selectAll()
+      .where('id', '=', id)
+      .executeTakeFirst();
+
+    if (!existing) return null;
+
+    const nextActive = isActive !== undefined ? (isActive ? 1 : 0) : existing.is_active === 1 ? 0 : 1;
+    const now = new Date().toISOString();
+
+    await this.db.db
+      .updateTable('agent_instances')
+      .set({
+        is_active: nextActive,
+        updated_at: now,
+      } as never)
+      .where('id', '=', id)
+      .execute();
+
+    return {
+      id: existing.id,
+      installationId: existing.installation_id,
+      personaId: existing.persona_id,
+      name: existing.name,
+      modelAlias: existing.model_alias || undefined,
+      workspaceDir: existing.workspace_dir || undefined,
+      permissionTier: existing.permission_tier as 'safe' | 'developer' | 'autonomous' | 'custom',
+      isActive: nextActive === 1,
+      createdAt: existing.created_at,
       updatedAt: now,
     };
   }
@@ -477,6 +589,7 @@ export class AgentDeckManager {
       name: r.name,
       description: r.description,
       mode: r.mode as 'mention',
+      defaultAgentInstanceId: r.default_agent_instance_id || undefined,
       maxTurnsPerRun: r.turn_limit,
       maxRuntimeSec: r.runtime_limit_sec,
       maxCostUSD: r.cost_limit_usd || undefined,
@@ -486,10 +599,29 @@ export class AgentDeckManager {
     }));
   }
 
+  public async getRoom(roomId: string): Promise<Room | null> {
+    const r = await this.db.db.selectFrom('rooms').selectAll().where('id', '=', roomId).executeTakeFirst();
+    if (!r) return null;
+    return {
+      id: r.id,
+      name: r.name,
+      description: r.description,
+      mode: r.mode as 'mention',
+      defaultAgentInstanceId: r.default_agent_instance_id || undefined,
+      maxTurnsPerRun: r.turn_limit,
+      maxRuntimeSec: r.runtime_limit_sec,
+      maxCostUSD: r.cost_limit_usd || undefined,
+      workspacePath: r.workspace_path || undefined,
+      createdAt: r.created_at,
+      updatedAt: r.updated_at,
+    };
+  }
+
   public async createRoom(params: {
     name: string;
     description?: string;
     mode?: 'mention' | 'panel' | 'debate' | 'round_robin' | 'coordinator';
+    defaultAgentInstanceId?: string | null;
     workspacePath?: string;
     memberInstanceIds?: string[];
     memberUserIds?: string[];
@@ -504,6 +636,7 @@ export class AgentDeckManager {
         name: params.name,
         description: params.description || '',
         mode: params.mode || 'mention',
+        default_agent_instance_id: params.defaultAgentInstanceId || null,
         turn_limit: 10,
         runtime_limit_sec: 600,
         workspace_path: params.workspacePath || null,
@@ -546,12 +679,43 @@ export class AgentDeckManager {
       name: params.name,
       description: params.description || '',
       mode: params.mode || 'mention',
+      defaultAgentInstanceId: params.defaultAgentInstanceId || undefined,
       maxTurnsPerRun: 10,
       maxRuntimeSec: 600,
       workspacePath: params.workspacePath,
       createdAt: now,
       updatedAt: now,
     };
+  }
+
+  public async updateRoom(
+    id: string,
+    updates: {
+      name?: string;
+      description?: string;
+      mode?: 'mention' | 'panel' | 'debate' | 'round_robin' | 'coordinator';
+      defaultAgentInstanceId?: string | null;
+      workspacePath?: string | null;
+    }
+  ): Promise<void> {
+    const patch: Record<string, unknown> = {
+      updated_at: new Date().toISOString(),
+    };
+    if (updates.name !== undefined) patch['name'] = updates.name;
+    if (updates.description !== undefined) patch['description'] = updates.description;
+    if (updates.mode !== undefined) patch['mode'] = updates.mode;
+    if (updates.defaultAgentInstanceId !== undefined) patch['default_agent_instance_id'] = updates.defaultAgentInstanceId;
+    if (updates.workspacePath !== undefined) patch['workspace_path'] = updates.workspacePath;
+
+    await this.db.db
+      .updateTable('rooms')
+      .set(patch as never)
+      .where('id', '=', id)
+      .execute();
+  }
+
+  public async setDefaultAgentInstanceForRoom(roomId: string, instanceId: string | null): Promise<void> {
+    await this.updateRoom(roomId, { defaultAgentInstanceId: instanceId });
   }
 
   public async listRoomMembers(roomId: string): Promise<Array<{ id: string; memberType: 'agent_instance' | 'user'; memberId: string; role: string }>> {
@@ -574,8 +738,9 @@ export class AgentDeckManager {
     memberType: 'agent_instance' | 'user';
     memberId: string;
     role?: 'owner' | 'admin' | 'participant' | 'observer';
-  }): Promise<void> {
+  }): Promise<{ id: string; roomId: string; memberType: 'agent_instance' | 'user'; memberId: string; role: string; joinedAt: string }> {
     const id = `rm-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`;
+    const now = new Date().toISOString();
     await this.db.db
       .insertInto('room_members')
       .values({
@@ -586,6 +751,28 @@ export class AgentDeckManager {
         role: params.role || 'participant',
       })
       .execute();
+
+    return {
+      id,
+      roomId: params.roomId,
+      memberType: params.memberType,
+      memberId: params.memberId,
+      role: params.role || 'participant',
+      joinedAt: now,
+    };
+  }
+
+  public async addRoomMember(
+    roomId: string,
+    memberType: 'agent_instance' | 'user',
+    memberId: string,
+    role?: 'owner' | 'admin' | 'participant' | 'observer'
+  ): Promise<{ id: string; roomId: string; memberType: 'agent_instance' | 'user'; memberId: string; role: string; joinedAt: string }> {
+    return this.addMemberToRoom({ roomId, memberType, memberId, role });
+  }
+
+  public async removeRoomMember(roomId: string, memberId: string): Promise<void> {
+    return this.removeMemberFromRoom(roomId, memberId);
   }
 
   public async removeMemberFromRoom(roomId: string, memberId: string): Promise<void> {
@@ -615,6 +802,7 @@ export class AgentDeckManager {
       content: r.content,
       contentType: r.content_type as 'text',
       turnIndex: r.turn_index || undefined,
+      deliveryTrace: r.delivery_trace_json ? JSON.parse(r.delivery_trace_json) : undefined,
       rawPayload: r.raw_payload_json ? JSON.parse(r.raw_payload_json) : undefined,
       createdAt: r.created_at,
     }));
@@ -627,6 +815,7 @@ export class AgentDeckManager {
     senderDisplayName: string;
     content: string;
     contentType?: 'text' | 'markdown' | 'tool_call' | 'tool_result' | 'system';
+    deliveryTrace?: ChatDeliveryTrace;
   }): Promise<Message> {
     const id = `msg-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`;
     const now = new Date().toISOString();
@@ -641,6 +830,7 @@ export class AgentDeckManager {
         sender_display_name: params.senderDisplayName,
         content: params.content,
         content_type: params.contentType || 'text',
+        delivery_trace_json: params.deliveryTrace ? JSON.stringify(params.deliveryTrace) : null,
       })
       .execute();
 
@@ -652,6 +842,7 @@ export class AgentDeckManager {
       senderDisplayName: params.senderDisplayName,
       content: params.content,
       contentType: params.contentType || 'text',
+      deliveryTrace: params.deliveryTrace,
       createdAt: now,
     };
 

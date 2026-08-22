@@ -8,13 +8,14 @@ import { runSetupWizard } from './wizard/index.js';
 import { AgentDeckManager, ChatService } from '@agentdeck/core';
 import type { RoomMode } from '@agentdeck/protocol';
 import { createAgentDeckServer } from '@agentdeck/server';
+import { AGENTDECK_VERSION } from '@agentdeck/shared';
 
 const program = new Command();
 
 program
   .name('agentdeck')
   .description('Universal multi-agent manager, group chat deck, and orchestrator for Linux & Web')
-  .version('1.0.3');
+  .version(AGENTDECK_VERSION);
 
 // 1. SETUP / ONBOARDING WIZARD
 program
@@ -260,6 +261,7 @@ program
     const bindHost = options.lan ? '0.0.0.0' : options.host || '127.0.0.1';
     await server.listen({ port, host: bindHost });
     console.log(chalk.bold.green(`\n🚀 AgentDeck Web Deck running at http://${bindHost}:${port}`));
+    console.log(chalk.cyan(`  📂 Web root: ${server.webRoot}`));
     console.log(chalk.green('  ✓ Web UI: ready'));
     console.log(chalk.green('  ✓ REST API: ready'));
     console.log(chalk.green('  ✓ WebSocket: ready'));

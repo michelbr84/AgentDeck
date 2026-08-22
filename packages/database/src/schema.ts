@@ -41,6 +41,7 @@ export interface AgentInstancesTable {
   model_alias: string | null;
   workspace_dir: string | null;
   permission_tier: string;
+  is_active: number; // 1 = active, 0 = disabled/archived
   created_at: Generated<string>;
   updated_at: Generated<string>;
 }
@@ -62,6 +63,7 @@ export interface RoomsTable {
   name: string;
   description: string;
   mode: string; // 'mention' | 'panel' | 'debate' | 'round_robin' | 'coordinator'
+  default_agent_instance_id: string | null;
   turn_limit: number;
   runtime_limit_sec: number;
   cost_limit_usd: number | null;
@@ -89,6 +91,7 @@ export interface MessagesTable {
   content: string;
   content_type: string;
   turn_index: number | null;
+  delivery_trace_json: string | null;
   raw_payload_json: string | null;
   created_at: Generated<string>;
 }

@@ -186,3 +186,44 @@ export const initialMigration: Migration = {
     await db.schema.dropTable('agent_installations').ifExists().execute();
   },
 };
+
+export const v104Migration: Migration = {
+  version: 2,
+  name: '002_v1_0_4_routing_and_management',
+  up: async (db) => {
+    // 1. Add is_active column to agent_instances
+    try {
+      await db.schema
+        .alterTable('agent_instances')
+        .addColumn('is_active', 'integer', (col) => col.notNull().defaultTo(1))
+        .execute();
+    } catch {
+      // Column might already exist
+    }
+
+    // 2. Add default_agent_instance_id to rooms
+    try {
+      await db.schema
+        .alterTable('rooms')
+        .addColumn('default_agent_instance_id', 'text')
+        .execute();
+    } catch {
+      // Column might already exist
+    }
+
+    // 3. Add delivery_trace_json to messages
+    try {
+      await db.schema
+        .alterTable('messages')
+        .addColumn('delivery_trace_json', 'text')
+        .execute();
+    } catch {
+      // Column might already exist
+    }
+  },
+  down: async () => {
+    // SQLite doesn't strictly support drop column easily without table recreation in older versions,
+    // so down migration keeps schema backwards compatible.
+  },
+};
+
