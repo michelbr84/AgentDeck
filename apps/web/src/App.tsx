@@ -22,6 +22,7 @@ import {
   Check,
 } from 'lucide-react';
 import { WEB_APP_VERSION } from './version';
+import { apiFetch } from './api';
 
 interface PromptLayer {
   id: string;
@@ -182,10 +183,10 @@ export default function App() {
   const fetchInitialData = async () => {
     try {
       const [agentsRes, instancesRes, personasRes, roomsRes] = await Promise.all([
-        fetch('/api/v1/agents').then((r) => r.json()).catch(() => []),
-        fetch('/api/v1/instances').then((r) => r.json()).catch(() => []),
-        fetch('/api/v1/personas').then((r) => r.json()).catch(() => []),
-        fetch('/api/v1/rooms').then((r) => r.json()).catch(() => []),
+        apiFetch('/api/v1/agents').catch(() => []),
+        apiFetch('/api/v1/instances').catch(() => []),
+        apiFetch('/api/v1/personas').catch(() => []),
+        apiFetch('/api/v1/rooms').catch(() => []),
       ]);
 
       setInstallations(Array.isArray(agentsRes) ? agentsRes : []);
@@ -206,8 +207,8 @@ export default function App() {
   const loadRoomData = async (roomId: string) => {
     try {
       const [msgsRes, membersRes] = await Promise.all([
-        fetch(`/api/v1/rooms/${roomId}/messages`).then((r) => r.json()).catch(() => []),
-        fetch(`/api/v1/rooms/${roomId}/members`).then((r) => r.json()).catch(() => []),
+        apiFetch(`/api/v1/rooms/${roomId}/messages`).catch(() => []),
+        apiFetch(`/api/v1/rooms/${roomId}/members`).catch(() => []),
       ]);
       if (Array.isArray(msgsRes)) setMessages(msgsRes);
       if (Array.isArray(membersRes)) setRoomMembers(membersRes);
@@ -228,19 +229,21 @@ export default function App() {
     setChatInput('');
 
     try {
-      const res = await fetch(`/api/v1/rooms/${currentRoom.id}/run`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ prompt, userId: 'user-michel', userName: 'Michel' }),
-      });
-      const data = await res.json();
-      if (data.deliveryTrace && data.deliveryTrace.state === 'no_target') {
-        showToast('info', data.deliveryTrace.feedbackMessage);
+      const data = await apiFetch<{ deliveryTrace?: { state: string; feedbackMessage?: string } }>(
+        `/api/v1/rooms/${currentRoom.id}/run`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ prompt, userId: 'user-michel', userName: 'Michel' }),
+        },
+      );
+      if (data?.deliveryTrace && data.deliveryTrace.state === 'no_target') {
+        showToast('info', data.deliveryTrace.feedbackMessage || '');
       }
       await loadRoomData(currentRoom.id);
     } catch (err) {
       console.error(err);
-      showToast('error', 'Failed to dispatch message');
+      showToast('error', (err as Error).message || 'Failed to dispatch message');
     }
   };
 
@@ -275,20 +278,18 @@ export default function App() {
     e.preventDefault();
     try {
       if (editingPersona) {
-        const res = await fetch(`/api/v1/personas/${editingPersona.id}`, {
+        await apiFetch(`/api/v1/personas/${editingPersona.id}`, {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(personaForm),
         });
-        if (!res.ok) throw new Error('Failed to update persona');
         showToast('success', `Persona "${personaForm.name}" updated`);
       } else {
-        const res = await fetch('/api/v1/personas', {
+        await apiFetch('/api/v1/personas', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(personaForm),
         });
-        if (!res.ok) throw new Error('Failed to create persona');
         showToast('success', `Persona "${personaForm.name}" created`);
       }
       setShowPersonaModal(false);
@@ -300,11 +301,10 @@ export default function App() {
 
   const handleDuplicatePersona = async (id: string) => {
     try {
-      const res = await fetch(`/api/v1/personas/${id}/duplicate`, {
+      await apiFetch(`/api/v1/personas/${id}/duplicate`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
       });
-      if (!res.ok) throw new Error('Failed to duplicate persona');
       showToast('success', 'Persona duplicated successfully');
       fetchInitialData();
     } catch (err) {
@@ -315,15 +315,7 @@ export default function App() {
   const handleDeletePersona = async (id: string, name: string) => {
     if (!confirm(`Are you sure you want to delete persona "${name}"?`)) return;
     try {
-      const res = await fetch(`/api/v1/personas/${id}`, {
-        method: 'DELETE',
-      });
-      if (res.status === 409) {
-        const data = await res.json();
-        showToast('error', data.error || 'Cannot delete persona: in use by active agents');
-        return;
-      }
-      if (!res.ok) throw new Error('Failed to delete persona');
+      await apiFetch(`/api/v1/personas/${id}`, { method: 'DELETE' });
       showToast('success', `Persona "${name}" deleted`);
       fetchInitialData();
     } catch (err) {
@@ -362,7 +354,7 @@ export default function App() {
     e.preventDefault();
     try {
       if (editingInstance) {
-        const res = await fetch(`/api/v1/instances/${editingInstance.id}`, {
+        await apiFetch(`/api/v1/instances/${editingInstance.id}`, {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -373,15 +365,13 @@ export default function App() {
             isActive: instanceForm.isActive,
           }),
         });
-        if (!res.ok) throw new Error('Failed to update agent instance');
         showToast('success', `Agent "${instanceForm.name}" updated`);
       } else {
-        const res = await fetch('/api/v1/instances', {
+        await apiFetch('/api/v1/instances', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(instanceForm),
         });
-        if (!res.ok) throw new Error('Failed to create agent instance');
         showToast('success', `Agent "${instanceForm.name}" created`);
       }
       setShowInstanceModal(false);
@@ -394,12 +384,11 @@ export default function App() {
   const handleToggleInstanceActive = async (inst: AgentInstance) => {
     try {
       const nextActive = !inst.isActive;
-      const res = await fetch(`/api/v1/instances/${inst.id}/toggle-active`, {
+      await apiFetch(`/api/v1/instances/${inst.id}/toggle-active`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ isActive: nextActive }),
       });
-      if (!res.ok) throw new Error('Failed to toggle status');
       showToast('info', `Agent "${inst.name}" is now ${nextActive ? 'Active' : 'Disabled'}`);
       fetchInitialData();
     } catch (err) {
@@ -410,8 +399,7 @@ export default function App() {
   const handleDeleteInstance = async (id: string, name: string) => {
     if (!confirm(`Are you sure you want to delete agent instance "${name}"?`)) return;
     try {
-      const res = await fetch(`/api/v1/instances/${id}`, { method: 'DELETE' });
-      if (!res.ok) throw new Error('Failed to delete agent instance');
+      await apiFetch(`/api/v1/instances/${id}`, { method: 'DELETE' });
       showToast('success', `Agent "${name}" deleted`);
       fetchInitialData();
     } catch (err) {
@@ -423,13 +411,11 @@ export default function App() {
   const handleSetRoomDefaultAgent = async (instanceId: string | null) => {
     if (!currentRoom) return;
     try {
-      const res = await fetch(`/api/v1/rooms/${currentRoom.id}/default-agent`, {
+      const updated = await apiFetch<Room>(`/api/v1/rooms/${currentRoom.id}/default-agent`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ defaultAgentInstanceId: instanceId }),
       });
-      if (!res.ok) throw new Error('Failed to update default agent');
-      const updated = await res.json();
       setCurrentRoom(updated);
       showToast('success', instanceId ? 'Default agent assigned' : 'Default agent cleared');
       fetchInitialData();
@@ -443,10 +429,10 @@ export default function App() {
     const isMember = roomMembers.some((m) => m.memberId === instanceId && m.memberType === 'agent_instance');
     try {
       if (isMember) {
-        await fetch(`/api/v1/rooms/${currentRoom.id}/members/${instanceId}`, { method: 'DELETE' });
+        await apiFetch(`/api/v1/rooms/${currentRoom.id}/members/${instanceId}`, { method: 'DELETE' });
         showToast('info', 'Agent removed from room');
       } else {
-        await fetch(`/api/v1/rooms/${currentRoom.id}/members`, {
+        await apiFetch(`/api/v1/rooms/${currentRoom.id}/members`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ memberType: 'agent_instance', memberId: instanceId, role: 'participant' }),
@@ -487,7 +473,7 @@ export default function App() {
     }
     setCreatingRoom(true);
     try {
-      const res = await fetch('/api/v1/rooms', {
+      const created = await apiFetch<Room>('/api/v1/rooms', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -498,11 +484,9 @@ export default function App() {
           defaultAgentInstanceId: createRoomForm.memberInstanceIds[0] ?? null,
         }),
       });
-      if (!res.ok) throw new Error('Failed to create room');
-      const created: Room = await res.json();
 
       // Refresh room list and switch to the new room immediately (no page reload).
-      const roomsRes = await fetch('/api/v1/rooms').then((r) => r.json()).catch(() => []);
+      const roomsRes = await apiFetch('/api/v1/rooms').catch(() => []);
       setRooms(Array.isArray(roomsRes) ? roomsRes : []);
       setCurrentRoom(created);
       await loadRoomData(created.id);
@@ -524,7 +508,7 @@ export default function App() {
   const handleInspectPrompt = async () => {
     if (instances.length === 0) return;
     try {
-      const res = await fetch('/api/v1/inspect-prompt', {
+      const data = await apiFetch<InspectedPromptData>('/api/v1/inspect-prompt', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -532,7 +516,6 @@ export default function App() {
           triggerMessage: 'Design the microservice architecture and security model.',
         }),
       });
-      const data = await res.json();
       setInspectedPrompt(data);
     } catch (e) {
       console.error(e);
