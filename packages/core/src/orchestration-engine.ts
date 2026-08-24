@@ -381,7 +381,9 @@ export class MultiAgentOrchestrationEngine {
             options.triggerMessage,
             producedMessages,
             turnsExecuted,
-            options
+            options,
+            runStartTime,
+            maxRuntimeMs
           );
           if (result) {
             producedMessages.push(result.message);
@@ -429,7 +431,9 @@ export class MultiAgentOrchestrationEngine {
             options.triggerMessage,
             producedMessages,
             turnsExecuted,
-            options
+            options,
+            runStartTime,
+            maxRuntimeMs
           );
           if (result) {
             producedMessages.push(result.message);
@@ -479,7 +483,9 @@ export class MultiAgentOrchestrationEngine {
             latestContext,
             producedMessages,
             turnsExecuted,
-            options
+            options,
+            runStartTime,
+            maxRuntimeMs
           );
           if (result) {
             producedMessages.push(result.message);
@@ -521,7 +527,9 @@ export class MultiAgentOrchestrationEngine {
             `Analyze the following request and coordinate with specialist personas: ${options.triggerMessage}`,
             producedMessages,
             turnsExecuted,
-            options
+            options,
+            runStartTime,
+            maxRuntimeMs
           );
           if (result) {
             producedMessages.push(result.message);
@@ -599,7 +607,9 @@ export class MultiAgentOrchestrationEngine {
     triggerText: string,
     history: Message[],
     turnIndex: number,
-    options: OrchestrationRunOptions
+    options: OrchestrationRunOptions,
+    runStartTime?: number,
+    maxRuntimeMs?: number
   ): Promise<{ message: Message; usage: { tokens: number; costUSD: number } } | null> {
     const adapter = this.manager.getAdapter(instance.installation.definitionId);
     if (!adapter) return null;
@@ -620,6 +630,19 @@ export class MultiAgentOrchestrationEngine {
     const abortCtrl = new AbortController();
     if (options.abortSignal) {
       options.abortSignal.addEventListener('abort', () => abortCtrl.abort());
+    }
+
+    // Enforce remaining runtime budget within the turn: abort the adapter if it exceeds
+    // the remaining time from the room's maxRuntimeSec setting.
+    let runtimeTimer: ReturnType<typeof setTimeout> | undefined;
+    if (runStartTime !== undefined && maxRuntimeMs !== undefined) {
+      const remaining = maxRuntimeMs - (Date.now() - runStartTime);
+      if (remaining <= 0) {
+        // Budget already exhausted — abort immediately
+        abortCtrl.abort();
+      } else {
+        runtimeTimer = setTimeout(() => abortCtrl.abort(), remaining);
+      }
     }
 
     let answerText = '';
@@ -658,6 +681,7 @@ export class MultiAgentOrchestrationEngine {
       });
 
       options.onTurnComplete?.(instance.name, msg);
+      if (runtimeTimer) clearTimeout(runtimeTimer);
       return {
         message: msg,
         usage: {
@@ -666,6 +690,7 @@ export class MultiAgentOrchestrationEngine {
         },
       };
     } catch (err) {
+      if (runtimeTimer) clearTimeout(runtimeTimer);
       const rawError = (err as Error).message;
       let sanitizedReason = 'Agent execution failed.';
       if (rawError.includes('not found') || rawError.includes('ENOENT')) {

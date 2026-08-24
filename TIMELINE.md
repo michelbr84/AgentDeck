@@ -52,7 +52,9 @@ Goal: every claim true or deleted; name chosen and reserved. Task ids match ROAD
 | — | Phase 0 exit review against criteria; reserve chosen name everywhere same-day | **1** | 0% | 5 |
 | | **Phase total** | **57 h** | | ≈ 11.4 h/wk ✅ within capacity |
 
-**Milestones:** v1.1.0 (Sep 5) · v1.1.1 (Sep 12) · name chosen & reserved (**hard deadline Sep 30**) `[FACT — dates from ROADMAP §10]`.
+**Milestones:** v1.1.0 (all Phase 0 tasks consolidated — see deviation note below) · name chosen & reserved (**hard deadline Sep 30**) `[FACT — dates from ROADMAP §10]`.
+
+**Version consolidation deviation:** TIMELINE.md originally planned v1.1.0 for tasks 0.1–0.3 and v1.1.1 for tasks 0.4–0.5. All Phase 0 work was consolidated into v1.1.0 because: (1) the implementation was completed in a single session rather than across 3 weekly sprints; (2) separating the release would have required reverting or cherry-picking interdependent changes (adapter honesty, metadata repair, and docs truth are tightly coupled); (3) a single v1.1.0 release is cleaner for users and avoids a point-release that only changes docs. The CHANGELOG reflects all changes under v1.1.0.
 
 ---
 

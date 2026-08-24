@@ -31,7 +31,7 @@ O **AgentDeck** é uma plataforma de gerenciamento e orquestração de agentes d
 - 🔄 **Upgrades Transacionais com Backup**: Criação automática de snapshots de backup antes de qualquer atualização de agente, com testes de saúde diagnósticos.
 - 🖥️ **Interface Dupla**:
   - **TUI Completa (Ink)**: Interface rica e responsiva direto no terminal com suporte a teclado.
-  - **Web Deck (React + Vite + Tailwind CSS)**: Interface web moderna com streaming em tempo real via WebSocket.
+  - **Web Deck (React + Vite + Tailwind CSS)**: Interface web moderna com feed de eventos ao vivo e operações CRUD completas.
 - 🔌 **Ecossistema de Plugins Extensível**: Suporte a plugins declarativos simples (`manifest.json`) e adaptadores completos (`@agentdeck/adapter-sdk`).
 - 🔒 **Segurança em Profundidade**: Vinculado por padrão a `127.0.0.1`, autenticação via token Bearer para rede local, redação recursiva de segredos/chaves de API e isolamento de permissões POSIX `0700`.
 
@@ -88,9 +88,6 @@ agentdeck docs
        │
        ▼
  Persona (Identidade, Prompt de Sistema Customizado, Idioma pt-BR, Avatar)
-       │
-       ▼
- RuntimeSession (Turno de execução ativo, limites de tempo e custo)
 ```
 
 ---

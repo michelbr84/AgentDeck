@@ -10,7 +10,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - **Transport badges**: Messages now carry raw payload metadata (transport type, exit code, tokens, cost) visible in Web Deck and TUI.
 - **Real cost/token accounting**: Orchestration engine now uses actual adapter-reported usage instead of hardcoded estimates.
-- **Cap enforcement**: `maxRuntimeSec` and `maxCostUSD` room settings are now enforced at turn boundaries with clear system messages.
+- **Runtime cap enforcement**: `maxRuntimeSec` room setting is now enforced both at turn boundaries AND within turn execution — the adapter's abort signal fires when the remaining runtime budget is exhausted, interrupting long-running processes. `maxCostUSD` is enforced at turn boundaries.
+- **Room cap creation**: `createRoom` now accepts `maxTurnsPerRun`, `maxRuntimeSec`, and `maxCostUSD` parameters (previously hardcoded to 10/600/null).
 - **Persistence trio**: `orchestration_runs`, `audit_logs`, and `backups` tables are now wired with manager methods and REST endpoints (`GET /api/v1/runs`, `GET /api/v1/audit-logs`, `GET /api/v1/backups`).
 - **WebSocket authentication**: `/ws` endpoint now requires authentication via `Authorization: Bearer` header or `?token=` query parameter when `--token` is set.
 - **CORS hardening**: Localhost CORS check now uses exact regex matching to prevent `http://localhost.evil.com` bypass.

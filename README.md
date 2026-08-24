@@ -31,7 +31,7 @@
 - 🔄 **Transactional Upgrades & Backups**: Automated pre-upgrade snapshot backups and health verification before modifying agent binaries or settings.
 - 🖥️ **Dual Interface**:
   - **Full-featured TUI (Ink)**: Responsive, keyboard-driven terminal user interface.
-  - **Web Deck (React + Vite + Tailwind CSS)**: Modern browser deck with real-time WebSocket streaming.
+  - **Web Deck (React + Vite + Tailwind CSS)**: Modern browser deck with live event feed and full CRUD operations.
 - 🔌 **Extensible Plugin Ecosystem**: Declarative simple plugins (`manifest.json`) and programmatic full adapters (`@agentdeck/adapter-sdk`).
 - 🔒 **Security in Depth**: Localhost-by-default (`127.0.0.1`), LAN bearer token authentication, recursive secret redaction, and `0700` filesystem isolation.
 
