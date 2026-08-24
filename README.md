@@ -19,7 +19,7 @@
 
 ## 🌟 What is AgentDeck?
 
-**AgentDeck** is a terminal-first and browser-ready management deck and orchestration platform for autonomous AI agents. With a single command on Ubuntu/Debian/Linux, configure, upgrade, audit, and orchestrate all your AI agents (**Claude Code**, **Hermes**, **OpenClaw**, **GarraIA**, **Pi**, **Kilo Code**, **Cline**, **Codex**) in unified multi-agent collaborative group chats.
+**AgentDeck** is a terminal-first and browser-ready management deck and orchestration platform for autonomous AI agents. With a single command on Ubuntu/Debian/Linux, configure, upgrade, audit, and orchestrate all your AI agents (**Claude Code**, **Hermes**, **OpenClaw**, **Pi**, **Kilo Code**, **Cline**, **Codex**) in unified multi-agent collaborative group chats.
 
 ---
 
@@ -88,9 +88,6 @@ agentdeck docs
        │
        ▼
  Persona (Identity, Custom System Prompt Overlay, Language pt-BR/en-US, Avatar)
-       │
-       ▼
- RuntimeSession (Active execution turn, cost caps, token limits, abort signals)
 ```
 
 ---

@@ -166,7 +166,7 @@ describe('AgentDeck Full Runtime & E2E Acceptance Suite', () => {
 
   // 3. Real WebSocket Streaming & Event Protocol
   it('3. Real WebSocket Protocol Connection, Streaming & Events', async () => {
-    const wsUrl = `ws://127.0.0.1:${TEST_PORT}/ws`;
+    const wsUrl = `ws://127.0.0.1:${TEST_PORT}/ws?token=${TEST_TOKEN}`;
     const receivedEvents: unknown[] = [];
 
     const ws = new WebSocket(wsUrl);

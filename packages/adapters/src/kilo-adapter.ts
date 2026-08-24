@@ -303,10 +303,8 @@ export class KiloAdapter implements AgentAdapter {
   }
 
   public async execute(context: ExecutionContext): Promise<ExecutionResult> {
-    const binPath = await this.findBinary();
-    const promptText = context.promptTree.finalRawPrompt;
-
-    if (!binPath) {
+    if (process.env.AGENTDECK_MOCK_EXECUTION === 'true' || process.env.NODE_ENV === 'test') {
+      const promptText = context.promptTree.finalRawPrompt;
       const mockResponse = `[Kilo Code] Codebase refactor plan for: "${promptText.slice(0, 80)}..."\nApplied changes to context.`;
       context.onChunk?.(mockResponse);
       return {
@@ -322,6 +320,13 @@ export class KiloAdapter implements AgentAdapter {
         },
         costUSD: { source: 'estimated', value: 0.001 },
       };
+    }
+
+    const binPath = await this.findBinary();
+    const promptText = context.promptTree.finalRawPrompt;
+
+    if (!binPath) {
+      throw new Error('Kilo Code binary (kilo) not found. Install it or deactivate this instance.');
     }
 
     const output = await executeSafeCommand({

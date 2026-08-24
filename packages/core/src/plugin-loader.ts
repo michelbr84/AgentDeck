@@ -2,7 +2,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
 import { z } from 'zod';
-import { AgentAdapter, ExecutionContext } from '@agentdeck/adapter-sdk';
+import { AgentAdapter, ExecutionContext, ExecutionResult } from '@agentdeck/adapter-sdk';
 import { AgentCapabilities, AgentDefinition, HealthReport, HealthCheckLevel } from '@agentdeck/protocol';
 import { executeSafeCommand } from '@agentdeck/adapter-sdk';
 
@@ -211,14 +211,17 @@ export class DeclarativePluginAdapter implements AgentAdapter {
 
   public async rollback() {}
 
-  public async execute(context: ExecutionContext) {
-    const promptText = context.promptTree.finalRawPrompt;
-    const det = await this.detect();
-    if (!det.installed || !det.binaryPath) {
+  public async execute(context: ExecutionContext): Promise<ExecutionResult> {
+    if (process.env.AGENTDECK_MOCK_EXECUTION === 'true' || process.env.NODE_ENV === 'test') {
+      const promptText = context.promptTree.finalRawPrompt;
       const mock = `[${this.manifest.name} Plugin] Processed prompt: ${promptText.slice(0, 80)}`;
       context.onChunk?.(mock);
       return {
         content: mock,
+        rawStdout: mock,
+        rawStderr: '',
+        exitCode: 0,
+        transport: 'mock',
         tokensUsed: {
           input: { source: 'estimated' as const, value: Math.ceil(promptText.length / 4) },
           output: { source: 'estimated' as const, value: Math.ceil(mock.length / 4) },
@@ -226,6 +229,12 @@ export class DeclarativePluginAdapter implements AgentAdapter {
         },
         costUSD: { source: 'estimated' as const, value: 0.001 },
       };
+    }
+
+    const promptText = context.promptTree.finalRawPrompt;
+    const det = await this.detect();
+    if (!det.installed || !det.binaryPath) {
+      throw new Error(`${this.manifest.name} binary not found. Install it or deactivate this instance.`);
     }
 
     const renderedArgs = this.manifest.execution.args.map((a: string) =>

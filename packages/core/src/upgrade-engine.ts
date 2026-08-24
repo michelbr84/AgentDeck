@@ -37,6 +37,12 @@ export class TransactionalUpgradeEngine {
     const detection = await adapter.detect();
     const latestInfo = await adapter.getLatestVersion();
     const resolvedTarget = targetVersion || latestInfo.latestVersion;
+    if (!resolvedTarget) {
+      throw new Error(
+        `Cannot determine latest version for ${adapter.definition.id}. ` +
+        'Check your network connection or specify a target version explicitly.'
+      );
+    }
     const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
     const backupPath = path.join(os.homedir(), '.agentdeck', 'backups', adapter.definition.id, timestamp);
 

@@ -321,7 +321,7 @@ export class HermesAdapter implements AgentAdapter {
     const targetDir = path.join(os.homedir(), '.hermes/hermes-agent');
     await executeSafeCommand({
       command: 'git',
-      args: ['clone', 'https://github.com/hermes/hermes-agent.git', targetDir],
+      args: ['clone', 'https://github.com/NousResearch/hermes-agent.git', targetDir],
       timeoutMs: 300000,
     });
     options?.onProgress?.('Installation completed', 100);

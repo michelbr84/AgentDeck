@@ -670,7 +670,7 @@ export default function App() {
                 <div className="bg-slate-900/60 border border-slate-800 p-4 rounded-xl">
                   <div className="text-xs text-slate-400 font-medium">Deterministic Routing</div>
                   <div className="text-2xl font-bold text-emerald-400 mt-1 flex items-center gap-1.5">
-                    <CheckCircle2 className="w-5 h-5" /> Active v1.0.4
+                    <CheckCircle2 className="w-5 h-5" /> Active v{WEB_APP_VERSION}
                   </div>
                 </div>
               </div>

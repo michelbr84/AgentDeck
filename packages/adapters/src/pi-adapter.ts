@@ -169,7 +169,7 @@ export class PiAdapter implements AgentAdapter {
       };
     }
     try {
-      const res = await executeSafeCommand({ command: 'npm', args: ['view', 'pi-cli', 'version'] });
+      const res = await executeSafeCommand({ command: 'npm', args: ['view', '@mariozechner/pi-coding-agent', 'version'] });
       return {
         latestVersion: res.stdout.trim() || '1.2.0',
         releaseNotes: 'Pi CLI adapter integration',
@@ -273,7 +273,7 @@ export class PiAdapter implements AgentAdapter {
     options?.onProgress?.('Installing Pi CLI...', 30);
     await executeSafeCommand({
       command: 'npm',
-      args: ['install', '-g', 'pi-cli'],
+      args: ['install', '-g', '@mariozechner/pi-coding-agent'],
       timeoutMs: 180000,
     });
     options?.onProgress?.('Pi CLI installed', 100);
@@ -281,13 +281,13 @@ export class PiAdapter implements AgentAdapter {
 
   public async upgrade(options?: UpgradeOptions): Promise<void> {
     if (options?.dryRun) {
-      options?.onProgress?.('Dry run: npm install -g pi-cli@latest', 100);
+      options?.onProgress?.('Dry run: npm install -g @mariozechner/pi-coding-agent@latest', 100);
       return;
     }
     options?.onProgress?.('Upgrading Pi CLI...', 50);
     await executeSafeCommand({
       command: 'npm',
-      args: ['install', '-g', 'pi-cli@latest'],
+      args: ['install', '-g', '@mariozechner/pi-coding-agent@latest'],
       timeoutMs: 180000,
     });
     options?.onProgress?.('Pi upgrade complete', 100);
@@ -303,11 +303,8 @@ export class PiAdapter implements AgentAdapter {
   }
 
   public async execute(context: ExecutionContext): Promise<ExecutionResult> {
-    const binPath = await this.findBinary();
-    const promptText = context.promptTree.finalRawPrompt;
-
-    if (!binPath) {
-      // Mock execution if binary not installed for pure testing / fallback
+    if (process.env.AGENTDECK_MOCK_EXECUTION === 'true' || process.env.NODE_ENV === 'test') {
+      const promptText = context.promptTree.finalRawPrompt;
       const mockResponse = `[Pi Assistant] Received: "${promptText.slice(0, 80)}..."\nI am ready to help you collaboratively!`;
       context.onChunk?.(mockResponse);
       return {
@@ -323,6 +320,13 @@ export class PiAdapter implements AgentAdapter {
         },
         costUSD: { source: 'estimated', value: 0.0005 },
       };
+    }
+
+    const binPath = await this.findBinary();
+    const promptText = context.promptTree.finalRawPrompt;
+
+    if (!binPath) {
+      throw new Error('Pi binary (pi) not found. Install it or deactivate this instance.');
     }
 
     const output = await executeSafeCommand({

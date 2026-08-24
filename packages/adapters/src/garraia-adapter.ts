@@ -24,7 +24,7 @@ export class GarraIAAdapter implements AgentAdapter {
   public readonly definition: AgentDefinition = {
     id: 'garraia',
     name: 'GarraIA',
-    description: 'High-performance Rust/Node universal multi-channel agent framework and gateway',
+    description: "Author's experimental Rust agent framework (GarraRUST) — bundled as a dogfooding/example adapter",
     version: '1.0.0',
     capabilities: {
       install: true,
@@ -306,14 +306,11 @@ export class GarraIAAdapter implements AgentAdapter {
     };
   }
 
-  public async install(options?: { onProgress?: (stage: string, percent?: number) => void }): Promise<void> {
-    options?.onProgress?.('Installing GarraIA via cargo...', 30);
-    await executeSafeCommand({
-      command: 'cargo',
-      args: ['install', '--path', '.'],
-      timeoutMs: 300000,
-    });
-    options?.onProgress?.('GarraIA installed successfully', 100);
+  public async install(): Promise<void> {
+    throw new Error(
+      'GarraIA is an experimental dogfooding adapter bundled for development. ' +
+      'Install manually via `cargo install --path .` from the GarraRUST repository if needed.'
+    );
   }
 
   public async upgrade(options?: UpgradeOptions): Promise<void> {

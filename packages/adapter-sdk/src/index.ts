@@ -22,7 +22,7 @@ export interface DetectionResult {
 }
 
 export interface LatestVersionResult {
-  latestVersion: string;
+  latestVersion: string | null;
   releaseNotes?: string;
   downloadUrl?: string;
 }

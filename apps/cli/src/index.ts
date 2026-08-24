@@ -243,6 +243,13 @@ program
   .option('--token <secret>', 'Mandatory authentication token for API and WebSocket')
   .option('--web-root <path>', 'Custom directory containing Web Deck static production build')
   .action(async (options) => {
+    // Pre-validate: --lan requires --token
+    if (options.lan && !options.token) {
+      console.error(chalk.red('\n✖ --lan requires --token for authentication.'));
+      console.error(chalk.yellow('  Usage: agentdeck web --lan --token <secret>\n'));
+      process.exit(1);
+    }
+
     const port = parseInt(options.port, 10) || 4321;
     const server = await createAgentDeckServer({
       port,
@@ -266,7 +273,7 @@ program
     console.log(chalk.green('  ✓ REST API: ready'));
     console.log(chalk.green('  ✓ WebSocket: ready'));
     if (options.token) {
-      console.log(chalk.yellow(`🔒 Authentication token required: ${options.token}`));
+      console.log(chalk.green('  🔒 Authentication: enabled (token required)'));
     }
   });
 
