@@ -170,3 +170,4 @@ export function isSafePathArgument(arg: string): boolean {
   return !dangerousChars.test(arg);
 }
 
+export * from './secret-store.js';

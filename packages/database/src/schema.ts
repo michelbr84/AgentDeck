@@ -42,6 +42,8 @@ export interface AgentInstancesTable {
   workspace_dir: string | null;
   permission_tier: string;
   is_active: number; // 1 = active, 0 = disabled/archived
+  /** JSON LlmRouting overriding the deck-wide default. Null = inherit. */
+  llm_override_json: string | null;
   created_at: Generated<string>;
   updated_at: Generated<string>;
 }
@@ -129,6 +131,14 @@ export interface BackupsTable {
   created_at: Generated<string>;
 }
 
+/** Singleton table: exactly one row, id `'default'`. */
+export interface LlmRoutingTable {
+  id: string;
+  primary_json: string;
+  backup_json: string | null;
+  updated_at: string;
+}
+
 export interface DatabaseSchema {
   agent_installations: AgentInstallationsTable;
   personas: PersonasTable;
@@ -140,4 +150,5 @@ export interface DatabaseSchema {
   orchestration_runs: OrchestrationRunsTable;
   audit_logs: AuditLogsTable;
   backups: BackupsTable;
+  llm_routing: LlmRoutingTable;
 }

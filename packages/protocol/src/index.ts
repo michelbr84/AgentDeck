@@ -382,3 +382,84 @@ export type AgentStreamEvent =
   | { type: 'tool_result'; toolName: string; result: unknown }
   | { type: 'diagnostic'; message: string };
 
+
+// ==========================================
+// 14. LLM ROUTING (provider + model + credential reference)
+// ==========================================
+
+/**
+ * Providers AgentDeck knows how to configure across agents.
+ *
+ * `garraia-gateway` is the local GarraIA gateway speaking both the
+ * OpenAI-compatible and Anthropic-compatible wires — it is how agents that
+ * cannot express a fallback natively still get one.
+ */
+export const ProviderIdSchema = z.enum([
+  'openrouter',
+  'ollama',
+  'openai',
+  'anthropic',
+  'garraia-gateway',
+  'custom',
+]);
+export type ProviderId = z.infer<typeof ProviderIdSchema>;
+
+/**
+ * One resolved provider+model pair.
+ *
+ * `credentialRef` is a *reference* ("file:openrouter"), never the secret. The
+ * name deliberately avoids `apiKey*`: `redactSecrets` blanks any key matching
+ * that shape, which would erase this field on its way to the UI.
+ */
+export const ProviderBindingSchema = z.object({
+  providerId: ProviderIdSchema,
+  model: z.string().min(1),
+  baseUrl: z.string().url().optional(),
+  credentialRef: z.string().optional(),
+});
+export type ProviderBinding = z.infer<typeof ProviderBindingSchema>;
+
+/** The deck-wide default: one primary, one optional backup. */
+export const LlmRoutingSchema = z.object({
+  primary: ProviderBindingSchema,
+  backup: ProviderBindingSchema.optional(),
+  updatedAt: z.string().datetime(),
+});
+export type LlmRouting = z.infer<typeof LlmRoutingSchema>;
+
+/**
+ * Per-instance escape hatch. Absent for almost every instance — applying one
+ * routing to every agent is the default, and overriding is opt-in.
+ */
+export const AgentLlmOverrideSchema = z.object({
+  instanceId: IdSchema,
+  routing: LlmRoutingSchema,
+});
+export type AgentLlmOverride = z.infer<typeof AgentLlmOverrideSchema>;
+
+/**
+ * How an agent expresses a backup model, surfaced to the UI so it can tell the
+ * truth instead of implying every agent failed over.
+ */
+export const BackupStrategySchema = z.enum(['native', 'via-gateway', 'none']);
+export type BackupStrategy = z.infer<typeof BackupStrategySchema>;
+
+/** How a credential reaches the agent. */
+export const KeyDeliverySchema = z.enum([
+  'native-config',
+  'env-in-config',
+  'key-helper-command',
+  'gateway-proxy',
+  'keychain',
+]);
+export type KeyDelivery = z.infer<typeof KeyDeliverySchema>;
+
+/** Per-agent LLM capability, computed at request time — not stored. */
+export const LlmConfigCapabilitySchema = z.object({
+  configurable: z.boolean(),
+  supportsBackup: z.boolean(),
+  backupStrategy: BackupStrategySchema,
+  keyDelivery: KeyDeliverySchema,
+  configFiles: z.array(z.string()).default([]),
+});
+export type LlmConfigCapability = z.infer<typeof LlmConfigCapabilitySchema>;

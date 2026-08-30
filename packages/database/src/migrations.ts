@@ -227,3 +227,45 @@ export const v104Migration: Migration = {
   },
 };
 
+
+/**
+ * v3 — deck-wide LLM routing plus the per-instance override.
+ *
+ * `llm_routing` is a singleton: exactly one row, id `'default'`. Applying one
+ * provider+model pair to every agent is the product default, so the common case
+ * needs a single read and no joins. `agent_instances.llm_override_json` carries
+ * the opt-in exception.
+ *
+ * Every statement is wrapped like `002` so re-running against a database that
+ * already has the column is a no-op rather than a hard failure.
+ */
+export const llmRoutingMigration: Migration = {
+  version: 3,
+  name: '003_llm_routing',
+  up: async (db) => {
+    try {
+      await db.schema
+        .createTable('llm_routing')
+        .addColumn('id', 'text', (col) => col.primaryKey())
+        .addColumn('primary_json', 'text', (col) => col.notNull())
+        .addColumn('backup_json', 'text')
+        .addColumn('updated_at', 'text', (col) => col.notNull())
+        .execute();
+    } catch {
+      // Table might already exist.
+    }
+
+    try {
+      await db.schema
+        .alterTable('agent_instances')
+        .addColumn('llm_override_json', 'text')
+        .execute();
+    } catch {
+      // Column might already exist.
+    }
+  },
+  down: async () => {
+    // Forward-only, matching 002: SQLite drop-column needs a table rebuild and
+    // the added surface is additive, so leaving it in place stays compatible.
+  },
+};
