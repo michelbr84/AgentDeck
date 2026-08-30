@@ -501,8 +501,20 @@ export class OpenClawAdapter implements AgentAdapter, LlmConfigurable {
       setPath(config, 'agents.defaults.model.fallback', openclawModelRef(routing.backup));
     }
     // Register both models so the allowlist recognises them by full ref.
-    setPath(config, `models.${openclawModelRef(routing.primary)}`, {});
-    if (routing.backup) setPath(config, `models.${openclawModelRef(routing.backup)}`, {});
+    //
+    // Assigned directly rather than through setPath: model ids contain dots
+    // (`glm-5.3-flash`, `qwen3.5:2b`) and setPath treats a dot as a nesting
+    // separator, which turned `models["openrouter/z-ai/glm-5.3-flash"]` into
+    // `models["openrouter/z-ai/glm-5"]["3-flash"]`.
+    if (typeof config['models'] !== 'object' || config['models'] === null || Array.isArray(config['models'])) {
+      config['models'] = {};
+    }
+    const modelsMap = config['models'] as Record<string, unknown>;
+    modelsMap[openclawModelRef(routing.primary)] = modelsMap[openclawModelRef(routing.primary)] ?? {};
+    if (routing.backup) {
+      const backupRef = openclawModelRef(routing.backup);
+      modelsMap[backupRef] = modelsMap[backupRef] ?? {};
+    }
     if (secret && envVar) setPath(config, `env.${envVar}`, secret);
 
     config[OWNERSHIP_MARKER_KEY] = buildOwnershipMarker(

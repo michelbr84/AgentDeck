@@ -112,7 +112,13 @@ export function getPath(obj: Record<string, unknown>, dotted: string): unknown {
   return cur;
 }
 
-/** Sets a dotted path, creating intermediate objects. Mutates and returns `obj`. */
+/**
+ * Sets a dotted path, creating intermediate objects. Mutates and returns `obj`.
+ *
+ * NOTE: the dot is always a separator, so this cannot address a key that
+ * *contains* a dot — and model ids routinely do (`glm-5.3-flash`, `qwen3.5:2b`).
+ * Assign such keys directly on the parent object instead.
+ */
 export function setPath(
   obj: Record<string, unknown>,
   dotted: string,

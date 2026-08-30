@@ -124,6 +124,21 @@ describe('applyLlmConfig — file-writing adapters', () => {
     expect((await fs.stat(file)).mode & 0o777).toBe(0o600);
   });
 
+  it('registers model refs verbatim, without splitting on the dots in an id', async () => {
+    // Model ids contain dots (`glm-5.3-flash`, `qwen3.5:2b`). A dotted-path
+    // setter treats those as nesting and silently produces
+    // `models["openrouter/z-ai/glm-5"]["3-flash"]`.
+    await new OpenClawAdapter().applyLlmConfig(ROUTING, opts());
+    const written = JSON.parse(
+      await fs.readFile(path.join(tmp, '.openclaw', 'openclaw.json'), 'utf8')
+    );
+    expect(Object.keys(written.models).sort()).toEqual([
+      'ollama/qwen3.5:2b',
+      'openrouter/z-ai/glm-5.3-flash',
+    ]);
+    expect(written.models['openrouter/z-ai/glm-5.3-flash']).toEqual({});
+  });
+
   it('points Claude Code at the gateway and blanks a stale API key', async () => {
     const adapter = new ClaudeCodeAdapter();
     const file = path.join(tmp, '.claude', 'settings.json');
