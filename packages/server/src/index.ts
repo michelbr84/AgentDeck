@@ -5,10 +5,18 @@ import fastifyStatic from '@fastify/static';
 import path from 'node:path';
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { AgentDeckManager, ChatService } from '@agentdeck/core';
+import {
+  AgentDeckManager,
+  ChatService,
+  PROVIDER_CATALOG,
+  RoutingService,
+  validateModel,
+} from '@agentdeck/core';
+import { isLlmConfigurable } from '@agentdeck/adapter-sdk';
 import { redactSecrets, timingSafeEqual } from '@agentdeck/security';
 import { AGENTDECK_PATHS, AGENTDECK_VERSION, AGENTDECK_BUILD_INFO } from '@agentdeck/shared';
 import type { Persona, RoomMode } from '@agentdeck/protocol';
+import { LlmRoutingSchema, ProviderBindingSchema } from '@agentdeck/protocol';
 import { WebSocket } from 'ws';
 export { WebSocket } from 'ws';
 
@@ -73,6 +81,7 @@ export async function createAgentDeckServer(options?: ServerOptions): Promise<Ag
   }) as unknown as AgentDeckServerInstance;
 
   const manager = options?.manager || (await AgentDeckManager.create());
+  const routingService = new RoutingService(manager.db);
   const chatService = new ChatService(manager);
   const authToken = options?.authToken;
 
@@ -208,6 +217,138 @@ export async function createAgentDeckServer(options?: ServerOptions): Promise<Ag
     }
     const result = await manager.upgradeEngine.executeUpgrade(adapter, { dryRun, targetVersion });
     return redactSecrets(result);
+  });
+
+  // Install a missing agent. `/health` and `/upgrade` existed; without this the
+  // Agents page could report "not installed" but do nothing about it.
+  server.post('/api/v1/agents/:id/install', async (req) => {
+    const { id } = req.params as { id: string };
+    const adapter = manager.getAdapter(id);
+    if (!adapter) throw new Error(`Agent ${id} not found`);
+    await adapter.install();
+    const detection = await adapter.detect();
+    return redactSecrets({ ok: true, detection });
+  });
+
+  // Per-agent LLM capability + what each one currently points at.
+  server.get('/api/v1/agents/llm', async () => {
+    const out = [];
+    for (const adapter of manager.getAllAdapters()) {
+      if (!isLlmConfigurable(adapter)) {
+        out.push({
+          agentId: adapter.definition.id,
+          name: adapter.definition.name,
+          configurable: false,
+        });
+        continue;
+      }
+      const detection = await adapter.detect();
+      const live = detection.installed ? await adapter.readLlmConfig() : null;
+      out.push({
+        agentId: adapter.definition.id,
+        name: adapter.definition.name,
+        configurable: true,
+        installed: detection.installed,
+        supportsBackup: adapter.llmConfig.supportsBackup,
+        backupStrategy: adapter.llmConfig.backupStrategy,
+        keyDelivery: adapter.llmConfig.keyDelivery,
+        configFiles: adapter.llmConfig.configFiles,
+        current: live?.primary ?? null,
+        currentBackup: live?.backup ?? null,
+        managedByAgentDeck: live?.managedByAgentDeck ?? false,
+        warnings: live?.warnings ?? [],
+      });
+    }
+    return redactSecrets(out);
+  });
+
+  // Deck-wide LLM routing.
+  server.get('/api/v1/llm-routing', async () => {
+    return redactSecrets({
+      routing: await routingService.getRouting(),
+      // Presence only — a value never leaves the secret store. Named
+      // `credentialPresence` rather than `credentials` because redactSecrets
+      // blanks any key ending in "credential(s)", and rightly so: a field with
+      // that name should hold a secret. This one holds booleans.
+      credentialPresence: await routingService.secretStore.status(),
+    });
+  });
+
+  server.put('/api/v1/llm-routing', async (req) => {
+    const routing = LlmRoutingSchema.parse(req.body);
+    await routingService.setRouting(routing);
+    return redactSecrets({ ok: true, routing });
+  });
+
+  // Apply the stored routing to every configurable agent.
+  server.post('/api/v1/llm-routing/apply', async (req) => {
+    const { dryRun, force, agentIds } = (req.body as {
+      dryRun?: boolean;
+      force?: boolean;
+      agentIds?: string[];
+    }) || {};
+    const routing = await routingService.getRouting();
+    if (!routing) throw new Error('No routing configured yet. Set one first.');
+
+    const adapters = manager
+      .getAllAdapters()
+      .filter((a) => (agentIds ? agentIds.includes(a.definition.id) : true));
+    const report = await routingService.applyToAgents(adapters, routing, {
+      runId: new Date().toISOString().replace(/[:.]/g, '-'),
+      dryRun: dryRun ?? false,
+      force: force ?? false,
+    });
+    return redactSecrets(report);
+  });
+
+  // Per-instance override.
+  server.get('/api/v1/instances/:id/llm-override', async (req) => {
+    const { id } = req.params as { id: string };
+    return redactSecrets({ override: await routingService.getOverride(id) });
+  });
+
+  server.put('/api/v1/instances/:id/llm-override', async (req) => {
+    const { id } = req.params as { id: string };
+    const body = req.body as { routing?: unknown } | null;
+    const routing = body?.routing ? LlmRoutingSchema.parse(body.routing) : null;
+    await routingService.setOverride(id, routing);
+    return redactSecrets({ ok: true });
+  });
+
+  // Credential presence, never values.
+  server.get('/api/v1/secrets/status', async () => {
+    return { credentialPresence: await routingService.secretStore.status() };
+  });
+
+  // Store a credential. The value is written to the secret store and is never
+  // echoed back, logged, or persisted in SQLite.
+  server.put('/api/v1/secrets/:provider', async (req) => {
+    const { provider } = req.params as { provider: string };
+    const { value } = (req.body as { value?: string }) || {};
+    if (!value) throw new Error('value is required');
+    const ref = await routingService.secretStore.set(provider, value);
+    return { ok: true, credentialRef: ref };
+  });
+
+  // Live model catalog + reachability for one provider.
+  server.post('/api/v1/providers/test', async (req) => {
+    const binding = ProviderBindingSchema.parse(req.body);
+    const result = await validateModel(binding, {
+      resolveSecret: () => routingService.secretStore.get(binding.providerId),
+    });
+    return redactSecrets(result);
+  });
+
+  server.get('/api/v1/providers/catalog', async () => {
+    return PROVIDER_CATALOG.map((p) => ({
+      id: p.id,
+      label: p.label,
+      summary: p.summary,
+      defaultModel: p.defaultModel,
+      suggestedModels: p.suggestedModels,
+      requiresCredential: p.requiresCredential,
+      keyUrl: p.keyUrl,
+    }));
   });
 
   // Personas

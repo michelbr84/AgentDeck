@@ -3,7 +3,9 @@
     "target": "ES2022",
     "module": "NodeNext",
     "moduleResolution": "NodeNext",
-    "lib": ["ES2022"],
+    "lib": [
+      "ES2022"
+    ],
     "outDir": "./dist",
     "rootDir": "./src",
     "declaration": true,
@@ -16,14 +18,30 @@
     "forceConsistentCasingInFileNames": true,
     "noUncheckedIndexedAccess": true
   },
-  "include": ["src/**/*"],
+  "include": [
+    "src/**/*"
+  ],
   "references": [
-    { "path": "../protocol" },
-    { "path": "../security" },
-    { "path": "../database" },
-    { "path": "../adapter-sdk" },
-    { "path": "../adapters" },
-    { "path": "../core" },
-    { "path": "../shared" }
+    {
+      "path": "../protocol"
+    },
+    {
+      "path": "../security"
+    },
+    {
+      "path": "../database"
+    },
+    {
+      "path": "../adapter-sdk"
+    },
+    {
+      "path": "../adapters"
+    },
+    {
+      "path": "../core"
+    },
+    {
+      "path": "../shared"
+    }
   ]
 }

@@ -20,8 +20,12 @@ import {
   X,
   Info,
   Check,
+  Zap,
+  Users,
 } from 'lucide-react';
 import { WEB_APP_VERSION } from './version';
+import { AgentControlPage } from './pages/AgentControlPage';
+import { GroupsPage } from './pages/GroupsPage';
 
 interface PromptLayer {
   id: string;
@@ -119,7 +123,7 @@ interface Message {
 }
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState<'dashboard' | 'agents' | 'personas' | 'chat' | 'prompt'>('dashboard');
+  const [activeTab, setActiveTab] = useState<'dashboard' | 'control' | 'groups' | 'agents' | 'personas' | 'chat' | 'prompt'>('control');
   const [installations, setInstallations] = useState<AgentInstallation[]>([]);
   const [instances, setInstances] = useState<AgentInstance[]>([]);
   const [personas, setPersonas] = useState<Persona[]>([]);
@@ -584,6 +588,24 @@ export default function App() {
               <Terminal className="w-4 h-4" /> Dashboard
             </button>
             <button
+              onClick={() => setActiveTab('control')}
+              data-testid="nav-control"
+              className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium transition ${
+                activeTab === 'control' ? 'bg-cyan-600/20 text-cyan-400 border border-cyan-500/30' : 'hover:bg-slate-800/60 text-slate-400'
+              }`}
+            >
+              <Zap className="w-4 h-4" /> Agent Control
+            </button>
+            <button
+              onClick={() => setActiveTab('groups')}
+              data-testid="nav-groups"
+              className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium transition ${
+                activeTab === 'groups' ? 'bg-cyan-600/20 text-cyan-400 border border-cyan-500/30' : 'hover:bg-slate-800/60 text-slate-400'
+              }`}
+            >
+              <Users className="w-4 h-4" /> Groups
+            </button>
+            <button
               onClick={() => setActiveTab('agents')}
               className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium transition ${
                 activeTab === 'agents' ? 'bg-cyan-600/20 text-cyan-400 border border-cyan-500/30' : 'hover:bg-slate-800/60 text-slate-400'
@@ -648,6 +670,9 @@ export default function App() {
         {/* Tab Views */}
         <div className="flex-1 overflow-y-auto p-6">
           {/* 1. DASHBOARD */}
+          {activeTab === 'control' && <AgentControlPage notify={(type, message) => setStatusNotification({ type, message })} />}
+          {activeTab === 'groups' && <GroupsPage notify={(type, message) => setStatusNotification({ type, message })} />}
+
           {activeTab === 'dashboard' && (
             <div className="space-y-6 max-w-6xl">
               <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
