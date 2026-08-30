@@ -18,12 +18,32 @@ import {
   UpgradeOptions,
   BackupResult,
   executeSafeCommand,
+  ApplyLlmConfigOptions,
+  ApplyLlmConfigResult,
+  ConfigDiffEntry,
+  LlmConfigCapabilities,
+  LlmConfigReadResult,
+  LlmConfigurable,
+  OWNERSHIP_KEY,
+  assertPrivateBeforeSecret,
+  buildOwnershipMarker,
+  detectDrift,
+  diffKeys,
+  getPath,
+  readJsonConfig,
+  readOwnershipMarker,
+  routingHash,
+  setPath,
+  writeJsonConfigAtomic,
 } from '@agentdeck/adapter-sdk';
+import type { LlmRouting, ProviderBinding } from '@agentdeck/protocol';
+import { AGENTDECK_VERSION } from '@agentdeck/shared';
+import { hermesModelRef, providerEnvVar } from './llm-shared.js';
 
 /** Official Hermes installer (NousResearch). */
 const HERMES_INSTALL_URL = 'https://hermes-agent.nousresearch.com/install.sh';
 
-export class HermesAdapter implements AgentAdapter {
+export class HermesAdapter implements AgentAdapter, LlmConfigurable {
   public readonly definition: AgentDefinition = {
     id: 'hermes',
     name: 'Hermes Agent',
@@ -370,6 +390,136 @@ export class HermesAdapter implements AgentAdapter {
         // continue
       }
     }
+  }
+
+
+  // ==========================================
+  // LlmConfigurable
+  // ==========================================
+
+  public readonly llmConfig: LlmConfigCapabilities = {
+    // Hermes selects one model at a time (`hermes model` / `/model`). It has no
+    // documented fallback slot, so we say `none` rather than writing the backup
+    // model somewhere it would be treated as primary.
+    backupStrategy: 'none',
+    supportsBackup: false,
+    keyDelivery: 'env-in-config',
+    configFiles: [path.join(os.homedir(), '.hermes', 'config.json')],
+  };
+
+  private get configPath(): string {
+    return path.join(os.homedir(), '.hermes', 'config.json');
+  }
+
+  private managedKeys(routing: LlmRouting): { key: string; value: string; secret?: boolean }[] {
+    const keys: { key: string; value: string; secret?: boolean }[] = [
+      { key: 'model.primary', value: hermesModelRef(routing.primary) },
+    ];
+    const envVar = providerEnvVar(routing.primary.providerId);
+    if (envVar && routing.primary.credentialRef) {
+      keys.push({ key: `env.${envVar}`, value: '', secret: true });
+    }
+    return keys;
+  }
+
+  public async readLlmConfig(): Promise<LlmConfigReadResult> {
+    let config: Record<string, unknown>;
+    try {
+      config = await readJsonConfig(this.configPath);
+    } catch (err) {
+      return {
+        primary: null,
+        backup: null,
+        managedByAgentDeck: false,
+        routingHash: null,
+        drift: [],
+        warnings: [(err as Error).message],
+      };
+    }
+    const raw = getPath(config, 'model.primary');
+    let primary: ProviderBinding | null = null;
+    if (typeof raw === 'string' && raw.includes(':')) {
+      const idx = raw.indexOf(':');
+      primary = {
+        providerId: raw.slice(0, idx) as ProviderBinding['providerId'],
+        model: raw.slice(idx + 1),
+      };
+    }
+    const marker = readOwnershipMarker(config);
+    return {
+      primary,
+      backup: null,
+      managedByAgentDeck: marker !== null,
+      routingHash: marker?.routingHash ?? null,
+      drift: [],
+      warnings: [],
+    };
+  }
+
+  public async applyLlmConfig(
+    routing: LlmRouting,
+    opts: ApplyLlmConfigOptions
+  ): Promise<ApplyLlmConfigResult> {
+    const warnings: string[] = [];
+    if (routing.backup) {
+      warnings.push(
+        'Hermes has no fallback slot, so only the primary model was applied. ' +
+          'Point Hermes at the GarraIA gateway if you want automatic failover.'
+      );
+    }
+
+    const file = this.configPath;
+    const config = await readJsonConfig(file);
+    const marker = readOwnershipMarker(config);
+    const desired = this.managedKeys(routing);
+
+    const drift = detectDrift(
+      config,
+      marker,
+      desired.filter((d) => !d.secret).map(({ key, value }) => ({ key, value }))
+    );
+    if (marker?.routingHash === routingHash(routing) && drift.length === 0) {
+      return { changed: false, alreadyCurrent: true, diff: [], filesWritten: [], backup: null, warnings };
+    }
+    if (drift.length > 0 && !opts.force) {
+      throw new Error(
+        `${file} has hand-edited keys AgentDeck manages (${drift.join(', ')}). ` +
+          'Re-run with --force to overwrite them.'
+      );
+    }
+
+    let secret: string | null = null;
+    const envVar = providerEnvVar(routing.primary.providerId);
+    if (envVar && routing.primary.credentialRef) {
+      secret = await opts.resolveSecret(routing.primary.credentialRef);
+      if (!secret) warnings.push(`No stored credential for ${routing.primary.providerId}.`);
+    }
+
+    const diff: ConfigDiffEntry[] = diffKeys(file, config, desired);
+    if (opts.dryRun) {
+      return { changed: diff.length > 0, alreadyCurrent: false, diff, filesWritten: [], backup: null, warnings };
+    }
+
+    if (secret) await assertPrivateBeforeSecret(file);
+    opts.onProgress?.('Writing Hermes model selection');
+
+    setPath(config, 'model.primary', hermesModelRef(routing.primary));
+    if (secret && envVar) setPath(config, `env.${envVar}`, secret);
+    config[OWNERSHIP_KEY] = buildOwnershipMarker(
+      routing,
+      desired.map((d) => d.key),
+      AGENTDECK_VERSION,
+      new Date().toISOString()
+    );
+
+    await writeJsonConfigAtomic(file, config);
+
+    const verify = await readJsonConfig(file);
+    if (getPath(verify, 'model.primary') !== hermesModelRef(routing.primary)) {
+      throw new Error(`Hermes config write did not take effect in ${file}`);
+    }
+
+    return { changed: true, alreadyCurrent: false, diff, filesWritten: [file], backup: null, warnings };
   }
 
   public async execute(context: ExecutionContext): Promise<ExecutionResult> {

@@ -20,16 +20,27 @@ import {
   executeSafeCommand,
 } from '@agentdeck/adapter-sdk';
 import {
+  ApplyLlmConfigOptions,
+  ApplyLlmConfigResult,
+  ConfigDiffEntry,
+  LlmConfigCapabilities,
+  LlmConfigReadResult,
+  LlmConfigurable,
+} from '@agentdeck/adapter-sdk';
+import type { LlmRouting } from '@agentdeck/protocol';
+import { providerEnvVar } from './llm-shared.js';
+import {
   fetchLatestGithubRelease,
   parseSemver,
   pathExists,
   resolveGarraiaConfigDir,
+  resolveGarraiaConfigFile,
 } from './agent-paths.js';
 
 /** Repo that publishes the `garraia-<os>-<arch>` release assets. */
 const GARRAIA_REPO = 'michelbr84/GarraRUST';
 
-export class GarraIAAdapter implements AgentAdapter {
+export class GarraIAAdapter implements AgentAdapter, LlmConfigurable {
   public readonly definition: AgentDefinition = {
     id: 'garraia',
     name: 'GarraIA',
@@ -390,6 +401,158 @@ export class GarraIAAdapter implements AgentAdapter {
         // continue
       }
     }
+  }
+
+
+  // ==========================================
+  // LlmConfigurable
+  // ==========================================
+
+  public readonly llmConfig: LlmConfigCapabilities = {
+    // GarraIA has real primary+fallback semantics: agent.default_provider plus
+    // agent.fallback_providers, with a circuit breaker already wired in the
+    // runtime. We only have to write the config.
+    backupStrategy: 'native',
+    supportsBackup: true,
+    keyDelivery: 'native-config',
+    // Filled in lazily by readLlmConfig/applyLlmConfig, which resolve the real
+    // path; this is the value the invariant test compares against the manifest.
+    configFiles: [],
+  };
+
+  public async readLlmConfig(): Promise<LlmConfigReadResult> {
+    const binPath = await this.findBinary();
+    if (!binPath) {
+      return {
+        primary: null,
+        backup: null,
+        managedByAgentDeck: false,
+        routingHash: null,
+        drift: [],
+        warnings: ['GarraIA binary not found; cannot read its routing.'],
+      };
+    }
+
+    // `garra config check --json` is the supported read path and already
+    // redacts credentials to a boolean.
+    try {
+      const res = await executeSafeCommand({
+        command: binPath,
+        args: ['config', 'check', '--json'],
+        timeoutMs: 20000,
+      });
+      const parsed = JSON.parse(res.stdout) as {
+        default_provider?: string;
+        fallback_providers?: string[];
+        providers?: Record<string, { provider?: string; model?: string; base_url?: string }>;
+      };
+      const lookup = (key: string | undefined): LlmRouting['primary'] | null => {
+        if (!key) return null;
+        const entry = parsed.providers?.[key];
+        if (!entry?.model) return null;
+        return {
+          providerId: (entry.provider ?? key) as LlmRouting['primary']['providerId'],
+          model: entry.model,
+          ...(entry.base_url ? { baseUrl: entry.base_url } : {}),
+        };
+      };
+      return {
+        primary: lookup(parsed.default_provider),
+        backup: lookup(parsed.fallback_providers?.[0]),
+        managedByAgentDeck: false,
+        routingHash: null,
+        drift: [],
+        warnings: [],
+      };
+    } catch {
+      return {
+        primary: null,
+        backup: null,
+        managedByAgentDeck: false,
+        routingHash: null,
+        drift: [],
+        warnings: ['Could not read GarraIA config via `garra config check --json`.'],
+      };
+    }
+  }
+
+  public async applyLlmConfig(
+    routing: LlmRouting,
+    opts: ApplyLlmConfigOptions
+  ): Promise<ApplyLlmConfigResult> {
+    const warnings: string[] = [];
+    const binPath = await this.findBinary();
+    if (!binPath) throw new Error('GarraIA binary (garra/garraia) not found');
+
+    const configFile = await resolveGarraiaConfigFile();
+    const args = [
+      'config',
+      'set-routing',
+      '--primary-provider',
+      routing.primary.providerId,
+      '--primary-model',
+      routing.primary.model,
+    ];
+    if (routing.primary.baseUrl) args.push('--primary-base-url', routing.primary.baseUrl);
+    if (routing.backup) {
+      args.push('--backup-provider', routing.backup.providerId, '--backup-model', routing.backup.model);
+      if (routing.backup.baseUrl) args.push('--backup-base-url', routing.backup.baseUrl);
+    }
+
+    // The credential goes over stdin, never argv: argv is world-readable
+    // through /proc on Linux.
+    let secret: string | null = null;
+    const envVar = providerEnvVar(routing.primary.providerId);
+    if (envVar && routing.primary.credentialRef) {
+      secret = await opts.resolveSecret(routing.primary.credentialRef);
+      if (secret) args.push('--api-key-stdin');
+      else warnings.push(`No stored credential for ${routing.primary.providerId}.`);
+    }
+
+    const diff: ConfigDiffEntry[] = [
+      {
+        file: configFile,
+        key: 'agent.default_provider',
+        before: null,
+        after: `${routing.primary.providerId} (${routing.primary.model})`,
+        redacted: false,
+      },
+    ];
+    if (routing.backup) {
+      diff.push({
+        file: configFile,
+        key: 'agent.fallback_providers[0]',
+        before: null,
+        after: `${routing.backup.providerId} (${routing.backup.model})`,
+        redacted: false,
+      });
+    }
+
+    if (opts.dryRun) {
+      args.push('--dry-run');
+      return { changed: true, alreadyCurrent: false, diff, filesWritten: [], backup: null, warnings };
+    }
+
+    opts.onProgress?.('Writing GarraIA routing via `garra config set-routing`');
+    const res = await executeSafeCommand({
+      command: binPath,
+      args,
+      ...(secret ? { stdin: `${secret}\n` } : {}),
+      timeoutMs: 30000,
+    });
+    if (res.exitCode !== 0) {
+      throw new Error(`garra config set-routing failed (exit ${res.exitCode}): ${res.stderr.trim()}`);
+    }
+
+    // Verify rather than trust the exit code.
+    const after = await this.readLlmConfig();
+    if (after.primary?.model !== routing.primary.model) {
+      warnings.push(
+        `GarraIA reported success but its config still shows ${after.primary?.model ?? 'nothing'}.`
+      );
+    }
+
+    return { changed: true, alreadyCurrent: false, diff, filesWritten: [configFile], backup: null, warnings };
   }
 
   public async execute(context: ExecutionContext): Promise<ExecutionResult> {

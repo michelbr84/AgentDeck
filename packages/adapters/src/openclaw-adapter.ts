@@ -18,9 +18,29 @@ import {
   UpgradeOptions,
   BackupResult,
   executeSafeCommand,
+  ApplyLlmConfigOptions,
+  ApplyLlmConfigResult,
+  ConfigDiffEntry,
+  LlmConfigCapabilities,
+  LlmConfigReadResult,
+  LlmConfigurable,
+  assertPrivateBeforeSecret,
+  buildOwnershipMarker,
+  detectDrift,
+  diffKeys,
+  getPath,
+  readJsonConfig,
+  readOwnershipMarker,
+  routingHash,
+  setPath,
+  writeJsonConfigAtomic,
 } from '@agentdeck/adapter-sdk';
+import type { LlmRouting, ProviderBinding } from '@agentdeck/protocol';
+import { AGENTDECK_VERSION } from '@agentdeck/shared';
+import { OWNERSHIP_KEY as OWNERSHIP_MARKER_KEY } from '@agentdeck/adapter-sdk';
+import { openclawModelRef, providerEnvVar } from './llm-shared.js';
 
-export class OpenClawAdapter implements AgentAdapter {
+export class OpenClawAdapter implements AgentAdapter, LlmConfigurable {
   public readonly definition: AgentDefinition = {
     id: 'openclaw',
     name: 'OpenClaw',
@@ -349,6 +369,158 @@ export class OpenClawAdapter implements AgentAdapter {
         // continue
       }
     }
+  }
+
+
+  // ==========================================
+  // LlmConfigurable
+  // ==========================================
+
+  public readonly llmConfig: LlmConfigCapabilities = {
+    // OpenClaw has a real fallback list under agents.defaults.model.
+    backupStrategy: 'native',
+    supportsBackup: true,
+    // The key goes into the config's own `env` block rather than being inlined
+    // into a model definition, which keeps it in exactly one place per file.
+    keyDelivery: 'env-in-config',
+    configFiles: [path.join(os.homedir(), '.openclaw', 'openclaw.json')],
+  };
+
+  private get configPath(): string {
+    return path.join(os.homedir(), '.openclaw', 'openclaw.json');
+  }
+
+  /** The leaves this adapter owns. Everything else in the file is the user's. */
+  private managedKeys(routing: LlmRouting): { key: string; value: string; secret?: boolean }[] {
+    const keys: { key: string; value: string; secret?: boolean }[] = [
+      { key: 'agents.defaults.model.primary', value: openclawModelRef(routing.primary) },
+    ];
+    if (routing.backup) {
+      keys.push({
+        key: 'agents.defaults.model.fallback',
+        value: openclawModelRef(routing.backup),
+      });
+    }
+    const envVar = providerEnvVar(routing.primary.providerId);
+    if (envVar && routing.primary.credentialRef) {
+      keys.push({ key: `env.${envVar}`, value: '', secret: true });
+    }
+    return keys;
+  }
+
+  public async readLlmConfig(): Promise<LlmConfigReadResult> {
+    const warnings: string[] = [];
+    let config: Record<string, unknown>;
+    try {
+      config = await readJsonConfig(this.configPath);
+    } catch (err) {
+      return {
+        primary: null,
+        backup: null,
+        managedByAgentDeck: false,
+        routingHash: null,
+        drift: [],
+        warnings: [(err as Error).message],
+      };
+    }
+
+    const parseRef = (raw: unknown): ProviderBinding | null => {
+      if (typeof raw !== 'string' || !raw.includes('/')) return null;
+      const idx = raw.indexOf('/');
+      const providerId = raw.slice(0, idx);
+      const model = raw.slice(idx + 1);
+      if (!model) return null;
+      return { providerId: providerId as ProviderBinding['providerId'], model };
+    };
+
+    const marker = readOwnershipMarker(config);
+    return {
+      primary: parseRef(getPath(config, 'agents.defaults.model.primary')),
+      backup: parseRef(getPath(config, 'agents.defaults.model.fallback')),
+      managedByAgentDeck: marker !== null,
+      routingHash: marker?.routingHash ?? null,
+      drift: [],
+      warnings,
+    };
+  }
+
+  public async applyLlmConfig(
+    routing: LlmRouting,
+    opts: ApplyLlmConfigOptions
+  ): Promise<ApplyLlmConfigResult> {
+    const warnings: string[] = [];
+    const file = this.configPath;
+    const config = await readJsonConfig(file);
+    const marker = readOwnershipMarker(config);
+    const desired = this.managedKeys(routing);
+
+    // Nothing to do when the same routing is already ours and untouched.
+    const drift = detectDrift(
+      config,
+      marker,
+      desired.filter((d) => !d.secret).map(({ key, value }) => ({ key, value }))
+    );
+    if (marker?.routingHash === routingHash(routing) && drift.length === 0) {
+      return {
+        changed: false,
+        alreadyCurrent: true,
+        diff: [],
+        filesWritten: [],
+        backup: null,
+        warnings,
+      };
+    }
+    if (drift.length > 0 && !opts.force) {
+      throw new Error(
+        `${file} has hand-edited keys AgentDeck manages (${drift.join(', ')}). ` +
+          'Re-run with --force to overwrite them.'
+      );
+    }
+
+    // Resolve the credential only now, immediately before it is needed.
+    let secret: string | null = null;
+    const envVar = providerEnvVar(routing.primary.providerId);
+    if (envVar && routing.primary.credentialRef) {
+      secret = await opts.resolveSecret(routing.primary.credentialRef);
+      if (!secret) {
+        warnings.push(`No stored credential for ${routing.primary.providerId}; left ${envVar} alone.`);
+      }
+    }
+
+    const diff: ConfigDiffEntry[] = diffKeys(file, config, desired);
+
+    if (opts.dryRun) {
+      return { changed: diff.length > 0, alreadyCurrent: false, diff, filesWritten: [], backup: null, warnings };
+    }
+
+    if (secret) await assertPrivateBeforeSecret(file);
+
+    opts.onProgress?.('Writing OpenClaw model routing');
+    setPath(config, 'agents.defaults.model.primary', openclawModelRef(routing.primary));
+    if (routing.backup) {
+      setPath(config, 'agents.defaults.model.fallback', openclawModelRef(routing.backup));
+    }
+    // Register both models so the allowlist recognises them by full ref.
+    setPath(config, `models.${openclawModelRef(routing.primary)}`, {});
+    if (routing.backup) setPath(config, `models.${openclawModelRef(routing.backup)}`, {});
+    if (secret && envVar) setPath(config, `env.${envVar}`, secret);
+
+    config[OWNERSHIP_MARKER_KEY] = buildOwnershipMarker(
+      routing,
+      desired.map((d) => d.key),
+      AGENTDECK_VERSION,
+      new Date().toISOString()
+    );
+
+    await writeJsonConfigAtomic(file, config);
+
+    // Never trust a blind shell-out: confirm the value actually landed.
+    const verify = await readJsonConfig(file);
+    if (getPath(verify, 'agents.defaults.model.primary') !== openclawModelRef(routing.primary)) {
+      throw new Error(`OpenClaw config write did not take effect in ${file}`);
+    }
+
+    return { changed: true, alreadyCurrent: false, diff, filesWritten: [file], backup: null, warnings };
   }
 
   public async execute(context: ExecutionContext): Promise<ExecutionResult> {
