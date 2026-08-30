@@ -4,6 +4,9 @@ export default defineConfig({
   test: {
     globals: true,
     environment: 'node',
-    include: ['packages/**/*.test.ts', 'tests/**/*.test.ts'],
+    // `apps/**` was missing, so every test under apps/cli and apps/web was
+    // invisible to the runner — the suites existed and simply never ran.
+    include: ['packages/**/*.test.ts', 'apps/**/*.test.ts', 'tests/**/*.test.ts'],
+    exclude: ['**/node_modules/**', '**/dist/**'],
   },
 });

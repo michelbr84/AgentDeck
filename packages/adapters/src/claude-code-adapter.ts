@@ -297,6 +297,18 @@ export class ClaudeCodeAdapter implements AgentAdapter {
           description: 'Global Claude Code authentication and user config',
           required: false,
         },
+        {
+          sourcePath: path.join(os.homedir(), '.claude', 'settings.json'),
+          relativePath: '.claude/settings.json',
+          description: 'Claude Code user settings (env block, model, MCP servers)',
+          required: false,
+        },
+        {
+          sourcePath: path.join(os.homedir(), '.claude', 'settings.local.json'),
+          relativePath: '.claude/settings.local.json',
+          description: 'Claude Code local settings overrides',
+          required: false,
+        },
       ],
     };
 
@@ -352,7 +364,8 @@ export class ClaudeCodeAdapter implements AgentAdapter {
   public async rollback(backup: BackupResult): Promise<void> {
     for (const file of backup.backedUpFiles) {
       const src = path.join(backup.backupPath, file);
-      const dest = path.join(os.homedir(), file);
+      const item = backup.manifest.items.find((i) => i.relativePath === file);
+      const dest = item ? item.sourcePath : path.join(os.homedir(), file);
       await fs.mkdir(path.dirname(dest), { recursive: true });
       await fs.copyFile(src, dest);
     }

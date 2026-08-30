@@ -20,6 +20,9 @@ import {
   executeSafeCommand,
 } from '@agentdeck/adapter-sdk';
 
+/** Official Hermes installer (NousResearch). */
+const HERMES_INSTALL_URL = 'https://hermes-agent.nousresearch.com/install.sh';
+
 export class HermesAdapter implements AgentAdapter {
   public readonly definition: AgentDefinition = {
     id: 'hermes',
@@ -317,28 +320,37 @@ export class HermesAdapter implements AgentAdapter {
   }
 
   public async install(options?: { onProgress?: (stage: string, percent?: number) => void }): Promise<void> {
-    options?.onProgress?.('Cloning hermes-agent from git repository...', 30);
-    const targetDir = path.join(os.homedir(), '.hermes/hermes-agent');
+    // The official installer bootstraps uv, Python 3.11, Node, ripgrep and
+    // ffmpeg. The previous `git clone github.com/hermes/hermes-agent` pointed
+    // at a repository that does not exist — the upstream is NousResearch, and
+    // a source checkout is not a working install anyway.
+    options?.onProgress?.('Downloading the Hermes installer...', 20);
     await executeSafeCommand({
-      command: 'git',
-      args: ['clone', 'https://github.com/hermes/hermes-agent.git', targetDir],
-      timeoutMs: 300000,
+      command: 'sh',
+      args: ['-c', `curl -fsSL ${HERMES_INSTALL_URL} | bash`],
+      timeoutMs: 900000,
     });
+    this.binaryPathCache = null;
     options?.onProgress?.('Installation completed', 100);
   }
 
   public async upgrade(options?: UpgradeOptions): Promise<void> {
-    const hermesRepo = path.join(os.homedir(), '.hermes/hermes-agent');
     if (options?.dryRun) {
-      options?.onProgress?.('Dry run: git fetch && git status in hermes repo', 100);
+      options?.onProgress?.('Dry run: hermes update', 100);
       return;
     }
-    options?.onProgress?.('Pulling latest updates for Hermes...', 50);
+    const binPath = await this.findBinary();
+    if (!binPath) {
+      await this.install({ onProgress: options?.onProgress });
+      return;
+    }
+    options?.onProgress?.('Upgrading Hermes via `hermes update`...', 50);
     await executeSafeCommand({
-      command: 'git',
-      args: ['-C', hermesRepo, 'pull', 'origin', 'main'],
-      timeoutMs: 120000,
+      command: binPath,
+      args: ['update'],
+      timeoutMs: 900000,
     });
+    this.binaryPathCache = null;
     options?.onProgress?.('Hermes upgrade completed', 100);
   }
 
