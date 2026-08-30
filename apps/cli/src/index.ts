@@ -8,6 +8,7 @@ import { runSetupWizard } from './wizard/index.js';
 import { runAgentsSetup } from './agents/setup.js';
 import { runAgentsStatus } from './agents/status.js';
 import { runAgentsRollback } from './agents/rollback.js';
+import { runAgentsLink } from './agents/link.js';
 import { AgentDeckManager, ChatService } from '@agentdeck/core';
 import type { RoomMode } from '@agentdeck/protocol';
 import { createAgentDeckServer } from '@agentdeck/server';
@@ -328,6 +329,20 @@ agentsCommand
   });
 
 agentsCommand
+  .command('link')
+  .description('Wire the agents so they can call each other (MCP + rooms)')
+  .option('--dry-run', 'report what would be registered without writing')
+  .option('--garra-bin <path>', 'path to the garra binary (default: resolved from PATH)')
+  .action(async (options) => {
+    try {
+      await runAgentsLink(options);
+    } catch (err) {
+      console.error(chalk.red(`\nLink falhou: ${(err as Error).message}`));
+      process.exitCode = 1;
+    }
+  });
+
+agentsCommand
   .command('rollback')
   .description('Restore agent configs captured before a routing apply')
   .option('--run <id>', 'run id to restore (omit to list available runs)')
@@ -339,6 +354,18 @@ agentsCommand
       console.error(chalk.red(`\nRollback falhou: ${(err as Error).message}`));
       process.exitCode = 1;
     }
+  });
+
+// 8c. MCP SERVER
+//
+// Exposes the deck over MCP stdio so any agent can reach any other. stdout is
+// reserved for JSON-RPC — see apps/cli/src/mcp-server.ts.
+program
+  .command('mcp-server')
+  .description('Expose this deck as an MCP server over stdio (for agent-to-agent calls)')
+  .action(async () => {
+    const { runMcpServer } = await import('./mcp-server.js');
+    await runMcpServer();
   });
 
 // 9. PLUGIN MANAGEMENT (LIST / CREATE TEMPLATE)
