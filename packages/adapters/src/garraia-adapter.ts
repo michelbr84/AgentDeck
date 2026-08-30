@@ -441,24 +441,26 @@ export class GarraIAAdapter implements AgentAdapter, LlmConfigurable {
         args: ['config', 'check', '--json'],
         timeoutMs: 20000,
       });
+      // `config check --json` nests everything under `summary`; the routing
+      // fields were added there precisely so this read-back can confirm a write.
       const parsed = JSON.parse(res.stdout) as {
-        default_provider?: string;
-        fallback_providers?: string[];
-        providers?: Record<string, { provider?: string; model?: string; base_url?: string }>;
-      };
-      const lookup = (key: string | undefined): LlmRouting['primary'] | null => {
-        if (!key) return null;
-        const entry = parsed.providers?.[key];
-        if (!entry?.model) return null;
-        return {
-          providerId: (entry.provider ?? key) as LlmRouting['primary']['providerId'],
-          model: entry.model,
-          ...(entry.base_url ? { baseUrl: entry.base_url } : {}),
+        summary?: {
+          default_provider?: string | null;
+          fallback_providers?: string[];
+          llm_models?: Record<string, string>;
         };
       };
+      const summary = parsed.summary ?? {};
+      const lookup = (key: string | null | undefined): LlmRouting['primary'] | null => {
+        if (!key) return null;
+        const model = summary.llm_models?.[key];
+        if (!model) return null;
+        // The `llm:` key is the provider type, by convention of set-routing.
+        return { providerId: key as LlmRouting['primary']['providerId'], model };
+      };
       return {
-        primary: lookup(parsed.default_provider),
-        backup: lookup(parsed.fallback_providers?.[0]),
+        primary: lookup(summary.default_provider),
+        backup: lookup(summary.fallback_providers?.[0]),
         managedByAgentDeck: false,
         routingHash: null,
         drift: [],
@@ -485,6 +487,28 @@ export class GarraIAAdapter implements AgentAdapter, LlmConfigurable {
     if (!binPath) throw new Error('GarraIA binary (garra/garraia) not found');
 
     const configFile = await resolveGarraiaConfigFile();
+
+    // GarraIA's config is YAML written by the Rust CLI, so there is no
+    // `_agentdeck` ownership marker to compare a hash against. Comparing the
+    // live routing to the desired one gives the same idempotency: without it a
+    // re-run always reports "applied" and rewrites the file, which also churns
+    // the YAML (the Rust loader round-trips and drops comments).
+    const live = await this.readLlmConfig();
+    const matches =
+      live.primary?.providerId === routing.primary.providerId &&
+      live.primary?.model === routing.primary.model &&
+      live.backup?.providerId === routing.backup?.providerId &&
+      live.backup?.model === routing.backup?.model;
+    if (matches) {
+      return {
+        changed: false,
+        alreadyCurrent: true,
+        diff: [],
+        filesWritten: [],
+        backup: null,
+        warnings,
+      };
+    }
     const args = [
       'config',
       'set-routing',

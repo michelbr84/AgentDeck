@@ -58,12 +58,17 @@ describe('resolveGarraiaConfigDir', () => {
   const saved = {
     GARRAIA_CONFIG_DIR: process.env['GARRAIA_CONFIG_DIR'],
     XDG_CONFIG_HOME: process.env['XDG_CONFIG_HOME'],
+    HOME: process.env['HOME'],
   };
 
   beforeEach(async () => {
     tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'agentdeck-paths-'));
     delete process.env['GARRAIA_CONFIG_DIR'];
     process.env['XDG_CONFIG_HOME'] = path.join(tmp, 'xdg');
+    // HOME must be isolated too: the legacy `~/.garraia` branch is checked
+    // before the XDG fallback, so a real one on the machine running the tests
+    // makes the fresh-install case pass or fail depending on the host.
+    process.env['HOME'] = path.join(tmp, 'home');
   });
 
   afterEach(async () => {
