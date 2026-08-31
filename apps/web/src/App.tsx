@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   Bot,
   MessageSquare,
@@ -131,6 +131,10 @@ export default function App() {
   const [currentRoom, setCurrentRoom] = useState<Room | null>(null);
   const [roomMembers, setRoomMembers] = useState<RoomMember[]>([]);
   const [messages, setMessages] = useState<Message[]>([]);
+  const [olderCursor, setOlderCursor] = useState<string | null>(null);
+  const [hasOlder, setHasOlder] = useState(false);
+  const [loadingOlder, setLoadingOlder] = useState(false);
+  const messagesScrollRef = useRef<HTMLDivElement | null>(null);
   const [chatInput, setChatInput] = useState('');
   const [inspectedPrompt, setInspectedPrompt] = useState<InspectedPromptData | null>(null);
   const [statusNotification, setStatusNotification] = useState<{ type: 'success' | 'error' | 'info'; message: string } | null>(null);
@@ -210,13 +214,49 @@ export default function App() {
   const loadRoomData = async (roomId: string) => {
     try {
       const [msgsRes, membersRes] = await Promise.all([
-        fetch(`/api/v1/rooms/${roomId}/messages`).then((r) => r.json()).catch(() => []),
+        fetch(`/api/v1/rooms/${roomId}/messages?limit=50`).then((r) => r.json()).catch(() => []),
         fetch(`/api/v1/rooms/${roomId}/members`).then((r) => r.json()).catch(() => []),
       ]);
-      if (Array.isArray(msgsRes)) setMessages(msgsRes);
+      if (Array.isArray(msgsRes)) {
+        // Older server without pagination: plain array, nothing further to page.
+        setMessages(msgsRes);
+        setOlderCursor(null);
+        setHasOlder(false);
+      } else if (msgsRes && Array.isArray(msgsRes.items)) {
+        setMessages(msgsRes.items);
+        setOlderCursor(msgsRes.nextCursor ?? null);
+        setHasOlder(Boolean(msgsRes.hasMore));
+      }
       if (Array.isArray(membersRes)) setRoomMembers(membersRes);
     } catch (e) {
       console.error(e);
+    }
+  };
+
+  const handleLoadOlder = async () => {
+    if (!currentRoom || !olderCursor || loadingOlder) return;
+    setLoadingOlder(true);
+    const container = messagesScrollRef.current;
+    const previousHeight = container?.scrollHeight ?? 0;
+    try {
+      const res = await fetch(
+        `/api/v1/rooms/${currentRoom.id}/messages?limit=50&before=${encodeURIComponent(olderCursor)}`
+      );
+      const page = await res.json();
+      if (page && Array.isArray(page.items)) {
+        setMessages((prev) => [...page.items, ...prev]);
+        setOlderCursor(page.nextCursor ?? null);
+        setHasOlder(Boolean(page.hasMore));
+        // Keep the viewport anchored on the message the user was reading.
+        requestAnimationFrame(() => {
+          if (container) container.scrollTop += container.scrollHeight - previousHeight;
+        });
+      }
+    } catch (err) {
+      console.error(err);
+      showToast('error', 'Failed to load older messages');
+    } finally {
+      setLoadingOlder(false);
     }
   };
 
@@ -1001,7 +1041,18 @@ export default function App() {
               {/* Chat Viewport */}
               <div className="flex-1 flex flex-col h-full bg-slate-900/30 border border-slate-800 rounded-xl overflow-hidden">
                 {/* Messages list */}
-                <div className="flex-1 overflow-y-auto space-y-3 p-4">
+                <div ref={messagesScrollRef} className="flex-1 overflow-y-auto space-y-3 p-4">
+                  {hasOlder && messages.length > 0 && (
+                    <div className="text-center">
+                      <button
+                        onClick={handleLoadOlder}
+                        disabled={loadingOlder}
+                        className="text-xs px-3 py-1.5 rounded-lg border border-slate-700 text-slate-300 hover:bg-slate-800 disabled:opacity-50"
+                      >
+                        {loadingOlder ? 'Loading…' : '↑ Load older messages'}
+                      </button>
+                    </div>
+                  )}
                   {messages.length === 0 ? (
                     <div className="text-center text-slate-500 py-16 space-y-2">
                       <p className="text-sm">No messages in room #{currentRoom?.name} yet.</p>
