@@ -69,6 +69,7 @@ export interface RoomsTable {
   turn_limit: number;
   runtime_limit_sec: number;
   cost_limit_usd: number | null;
+  turn_timeout_sec: number | null;
   workspace_path: string | null;
   created_at: Generated<string>;
   updated_at: Generated<string>;

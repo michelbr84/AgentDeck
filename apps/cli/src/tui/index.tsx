@@ -1,7 +1,7 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { render, Box, Text, useInput, useApp } from 'ink';
 import TextInput from 'ink-text-input';
-import { AgentDeckManager, ChatService } from '@agentdeck/core';
+import { AgentDeckManager, ChatService, RunAbortError } from '@agentdeck/core';
 import { AgentInstallation, AgentInstance, Room, Message, Persona } from '@agentdeck/protocol';
 import { AGENTDECK_VERSION } from '@agentdeck/shared';
 
@@ -30,6 +30,7 @@ export const TuiApp: React.FC<TuiOptions> = ({ initialView = 'dashboard', initia
   const [isInputFocused, setIsInputFocused] = useState(false);
   const [statusMessage, setStatusMessage] = useState('Welcome to AgentDeck Terminal Deck');
   const [isOrchestrating, setIsOrchestrating] = useState(false);
+  const runAbortRef = useRef<AbortController | null>(null);
 
   // Sub-navigation / selection indices inside management views
   const [selectedPersonaIndex, setSelectedPersonaIndex] = useState(0);
@@ -96,6 +97,12 @@ export const TuiApp: React.FC<TuiOptions> = ({ initialView = 'dashboard', initia
     (input, key) => {
       // Exit / Cancel conditions
       if (key.escape) {
+        if (isOrchestrating) {
+          // ESC during a run stops the run, never the whole app.
+          runAbortRef.current?.abort(new RunAbortError());
+          setStatusMessage('⏹ Stopping run...');
+          return;
+        }
         if (editMode !== 'none') {
           setEditMode('none');
           setFormInputText('');
@@ -273,8 +280,10 @@ export const TuiApp: React.FC<TuiOptions> = ({ initialView = 'dashboard', initia
     setChatInput('');
     setIsInputFocused(false);
 
-    setStatusMessage(`Sending prompt to #${currentRoom.name}...`);
+    setStatusMessage(`Sending prompt to #${currentRoom.name}... (ESC stops the run)`);
     setIsOrchestrating(true);
+    const abortController = new AbortController();
+    runAbortRef.current = abortController;
 
     try {
       if (chatService) {
@@ -283,6 +292,7 @@ export const TuiApp: React.FC<TuiOptions> = ({ initialView = 'dashboard', initia
           content,
           senderUserId: 'local-user',
           senderDisplayName: 'Michel (You)',
+          abortSignal: abortController.signal,
         });
         setMessages(result.messages);
         const reason = result.deliveryTrace?.reasonCode || 'executed';
@@ -301,6 +311,7 @@ export const TuiApp: React.FC<TuiOptions> = ({ initialView = 'dashboard', initia
     } catch (err) {
       setStatusMessage(`✖ Error executing turn: ${(err as Error).message}`);
     } finally {
+      runAbortRef.current = null;
       setIsOrchestrating(false);
     }
   };

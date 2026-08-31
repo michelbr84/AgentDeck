@@ -131,6 +131,7 @@ export default function App() {
   const [currentRoom, setCurrentRoom] = useState<Room | null>(null);
   const [roomMembers, setRoomMembers] = useState<RoomMember[]>([]);
   const [messages, setMessages] = useState<Message[]>([]);
+  const [isSending, setIsSending] = useState(false);
   const [olderCursor, setOlderCursor] = useState<string | null>(null);
   const [hasOlder, setHasOlder] = useState(false);
   const [loadingOlder, setLoadingOlder] = useState(false);
@@ -267,9 +268,10 @@ export default function App() {
 
   const handleSendMessage = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!chatInput.trim() || !currentRoom) return;
+    if (!chatInput.trim() || !currentRoom || isSending) return;
     const prompt = chatInput.trim();
     setChatInput('');
+    setIsSending(true);
 
     try {
       const res = await fetch(`/api/v1/rooms/${currentRoom.id}/run`, {
@@ -281,10 +283,27 @@ export default function App() {
       if (data.deliveryTrace && data.deliveryTrace.state === 'no_target') {
         showToast('info', data.deliveryTrace.feedbackMessage);
       }
+      if (data.status === 'cancelled') {
+        showToast('info', 'Run stopped.');
+      }
       await loadRoomData(currentRoom.id);
     } catch (err) {
       console.error(err);
       showToast('error', 'Failed to dispatch message');
+    } finally {
+      setIsSending(false);
+    }
+  };
+
+  // Room-scoped abort needs no runId, so the stop button works even before a
+  // run:started event could tell us which run is live.
+  const handleStopRun = async () => {
+    if (!currentRoom) return;
+    try {
+      await fetch(`/api/v1/rooms/${currentRoom.id}/abort`, { method: 'POST' });
+    } catch (err) {
+      console.error(err);
+      showToast('error', 'Failed to stop the run');
     }
   };
 
@@ -1134,12 +1153,22 @@ export default function App() {
                     }
                     className="flex-1 bg-slate-950 border border-slate-800 rounded-lg px-4 py-2.5 text-sm focus:outline-none focus:border-cyan-500 text-slate-100"
                   />
-                  <button
-                    type="submit"
-                    className="bg-cyan-600 hover:bg-cyan-500 text-white px-5 py-2.5 rounded-lg text-sm font-medium flex items-center gap-2"
-                  >
-                    <Send className="w-4 h-4" /> Send
-                  </button>
+                  {isSending ? (
+                    <button
+                      type="button"
+                      onClick={handleStopRun}
+                      className="bg-rose-600 hover:bg-rose-500 text-white px-5 py-2.5 rounded-lg text-sm font-medium flex items-center gap-2"
+                    >
+                      ■ Stop
+                    </button>
+                  ) : (
+                    <button
+                      type="submit"
+                      className="bg-cyan-600 hover:bg-cyan-500 text-white px-5 py-2.5 rounded-lg text-sm font-medium flex items-center gap-2"
+                    >
+                      <Send className="w-4 h-4" /> Send
+                    </button>
+                  )}
                 </form>
               </div>
             </div>

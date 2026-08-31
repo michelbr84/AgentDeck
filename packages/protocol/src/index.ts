@@ -178,6 +178,8 @@ export const RoomSchema = z.object({
   maxTurnsPerRun: z.number().int().positive().default(10),
   maxRuntimeSec: z.number().int().positive().default(600),
   maxCostUSD: z.number().positive().optional(),
+  /** Wall-clock cap for a single agent turn; unset falls back to the deck default. */
+  turnTimeoutSec: z.number().int().positive().optional(),
   workspacePath: z.string().optional(),
   createdAt: z.string().datetime(),
   updatedAt: z.string().datetime(),
@@ -205,6 +207,7 @@ export const ChatDeliveryStateSchema = z.enum([
   'routing',
   'running',
   'completed',
+  'cancelled',
   'failed',
   'no_target',
 ]);
@@ -223,6 +226,7 @@ export const ChatDeliveryReasonCodeSchema = z.enum([
   'target_agent_inactive',
   'target_agent_not_member',
   'execution_error',
+  'run_aborted',
 ]);
 export type ChatDeliveryReasonCode = z.infer<typeof ChatDeliveryReasonCodeSchema>;
 
@@ -336,6 +340,34 @@ export const EventEnvelopeSchema = z.object({
 export type EventEnvelope<T = unknown> = Omit<z.infer<typeof EventEnvelopeSchema>, 'payload'> & {
   payload: T;
 };
+
+/**
+ * Payload for `run:chunk` events — one coalesced slice of an agent's live
+ * output. `seq` is monotonic per turn so consumers can re-order or detect
+ * gaps; text is already redacted by the server before hitting the wire.
+ */
+export const RunChunkPayloadSchema = z.object({
+  runId: IdSchema,
+  roomId: IdSchema,
+  instanceId: IdSchema,
+  instanceName: z.string(),
+  turnIndex: z.number().int().nonnegative(),
+  seq: z.number().int().nonnegative(),
+  text: z.string(),
+});
+export type RunChunkPayload = z.infer<typeof RunChunkPayloadSchema>;
+
+/** Payload for `run:turn:started` / `run:turn:completed` / `run:turn:failed`. */
+export const RunTurnPayloadSchema = z.object({
+  runId: IdSchema,
+  roomId: IdSchema,
+  instanceId: IdSchema,
+  instanceName: z.string(),
+  turnIndex: z.number().int().nonnegative(),
+  messageId: IdSchema.optional(),
+  error: z.string().optional(),
+});
+export type RunTurnPayload = z.infer<typeof RunTurnPayloadSchema>;
 
 // ==========================================
 // 12. NORMALIZED TRANSPORT & TURN EXECUTION

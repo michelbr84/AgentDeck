@@ -606,6 +606,27 @@ export async function createAgentDeckServer(options?: ServerOptions): Promise<Ag
     return redactSecrets(result);
   });
 
+  // Run abort controls: by runId (precise) or by room (no runId needed — the
+  // stop button can fire before any run:started event reaches the client).
+  server.post('/api/v1/runs/:runId/abort', async (req, reply) => {
+    const { runId } = req.params as { runId: string };
+    const aborted = manager.abortRun(runId);
+    if (!aborted) {
+      return reply.status(404).send({ error: `No active run "${runId}"` });
+    }
+    return { success: true, runId };
+  });
+
+  server.post('/api/v1/rooms/:id/abort', async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const room = await manager.getRoom(id);
+    if (!room) {
+      return reply.status(404).send({ error: `Room with ID "${id}" not found` });
+    }
+    const aborted = manager.abortRoomRuns(id);
+    return { success: true, aborted };
+  });
+
   // Inspect Prompt (Non-destructive inspection with layer provenance & redactions)
   server.post('/api/v1/inspect-prompt', async (req) => {
     const body = req.body as { instanceId?: string; workspaceContext?: string; roomInstructions?: string; triggerMessage?: string };
@@ -664,6 +685,9 @@ export async function createAgentDeckServer(options?: ServerOptions): Promise<Ag
         const parsed = JSON.parse(rawMsg.toString('utf8'));
         if (parsed.type === 'ping') {
           socket.send(JSON.stringify({ type: 'pong', timestamp: new Date().toISOString() }));
+        } else if (parsed.type === 'run:abort' && typeof parsed.runId === 'string') {
+          const aborted = manager.abortRun(parsed.runId);
+          socket.send(JSON.stringify({ type: 'run:abort:ack', runId: parsed.runId, aborted }));
         }
       } catch {
         // Invalid json

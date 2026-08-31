@@ -7,6 +7,8 @@ import {
   AgentInstallation,
   ChatDeliveryTrace,
 } from '@agentdeck/protocol';
+import { DEFAULT_INTEROP_LIMITS } from './interop-guardrails.js';
+import { RunAbortError, TurnTimeoutError, RunBudget } from './run-control.js';
 
 export interface OrchestrationRunOptions {
   roomId: string;
@@ -15,6 +17,8 @@ export interface OrchestrationRunOptions {
   senderDisplayName: string;
   modeOverride?: 'mention' | 'panel' | 'debate' | 'round_robin' | 'coordinator';
   abortSignal?: AbortSignal;
+  /** Per-turn wall clock override; falls back to room.turnTimeoutSec, then the deck default. */
+  turnTimeoutMs?: number;
   onTurnStart?: (instanceName: string, turnIndex: number) => void;
   onChunk?: (instanceName: string, chunk: string) => void;
   onTurnComplete?: (instanceName: string, message: Message) => void;
@@ -37,6 +41,41 @@ interface ResolvedRouting {
   trace: ChatDeliveryTrace;
   shouldExecute: boolean;
   systemFeedbackMessage?: string;
+}
+
+/** Live token chunks are coalesced behind this flush interval — every emitted
+ * envelope costs a redactSecrets deep clone plus one JSON.stringify per
+ * connected WebSocket, so per-chunk emission would melt under fast agents. */
+const CHUNK_FLUSH_MS = 50;
+
+/**
+ * Settles with the promise, or rejects with the signal's reason as soon as it
+ * aborts — so an adapter that ignores its AbortSignal cannot pin the turn.
+ * The raced promise's eventual rejection is swallowed to avoid unhandled
+ * rejection noise after the turn has already moved on.
+ */
+function raceWithAbort<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
+  if (signal.aborted) {
+    promise.catch(() => {});
+    return Promise.reject(signal.reason ?? new Error('aborted'));
+  }
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => {
+      promise.catch(() => {});
+      reject(signal.reason ?? new Error('aborted'));
+    };
+    signal.addEventListener('abort', onAbort, { once: true });
+    promise.then(
+      (value) => {
+        signal.removeEventListener('abort', onAbort);
+        resolve(value);
+      },
+      (err) => {
+        signal.removeEventListener('abort', onAbort);
+        reject(err);
+      }
+    );
+  });
 }
 
 export class MultiAgentOrchestrationEngine {
@@ -165,9 +204,12 @@ export class MultiAgentOrchestrationEngine {
       };
     }
 
-    // 4. Coordinator Mode
+    // 4. Coordinator Mode — the room's default agent leads when set.
     if (mode === 'coordinator') {
-      const coordinator = activeRoomInstances[0]!;
+      const coordinator =
+        (room.defaultAgentInstanceId &&
+          activeRoomInstances.find((i) => i.id === room.defaultAgentInstanceId)) ||
+        activeRoomInstances[0]!;
       const trace: ChatDeliveryTrace = {
         state: 'running',
         reasonCode: 'coordinator_delegate',
@@ -263,201 +305,272 @@ export class MultiAgentOrchestrationEngine {
       mode: options.modeOverride || room.mode,
     };
 
-    const maxTurns = effectiveRoom.maxTurnsPerRun || 10;
-    const allInstances = await this.manager.listAgentInstances();
-    const members = await this.manager.listRoomMembers(effectiveRoom.id);
-    const roomMemberInstanceIds = new Set(
-      members.filter((m) => m.memberType === 'agent_instance').map((m) => m.memberId)
-    );
-
-    // Filter instances strictly to those that belong to the room AND are active.
-    const activeRoomInstances = allInstances.filter(
-      (i) => roomMemberInstanceIds.has(i.id) && i.isActive !== false
-    );
-
-    // Resolve routing
-    const routing = this.resolveRouting(effectiveRoom, options.triggerMessage, activeRoomInstances);
-
-    // 1. Post user trigger message with delivery trace attached
-    const userMsg = await this.manager.postMessage({
-      roomId: effectiveRoom.id,
-      senderType: 'user',
-      senderId: options.senderUserId,
-      senderDisplayName: options.senderDisplayName,
-      content: options.triggerMessage,
-      contentType: 'text',
-      deliveryTrace: routing.trace,
-    });
-
-    const producedMessages: Message[] = [userMsg];
-    let turnsExecuted = 0;
-    let totalTokens = 0;
-    let totalCost = 0;
-
-    this.manager.eventBus.emit('run:started', {
-      runId,
-      roomId: effectiveRoom.id,
-      mode: effectiveRoom.mode,
-      activeInstances: routing.targetInstances.map((i) => i.id),
-    });
-
-    if (!routing.shouldExecute || routing.targetInstances.length === 0) {
-      // If actionable feedback message is provided, post a helpful system message in the room
-      if (routing.systemFeedbackMessage) {
-        const feedbackMsg = await this.manager.postMessage({
-          roomId: effectiveRoom.id,
-          senderType: 'user',
-          senderId: 'system',
-          senderDisplayName: 'AgentDeck Routing',
-          content: routing.systemFeedbackMessage,
-          contentType: 'system',
-          deliveryTrace: routing.trace,
-        });
-        producedMessages.push(feedbackMsg);
-      }
-
-      this.manager.eventBus.emit('run:completed', {
-        runId,
-        totalTurns: 0,
-        totalCost: 0,
-      });
-
-      return {
-        runId,
-        roomId: effectiveRoom.id,
-        status: 'completed',
-        turnsExecuted: 0,
-        messages: producedMessages,
-        tokensUsed: 0,
-        costUSD: 0,
-        deliveryTrace: routing.trace,
-      };
+    // One controller per run, registered so REST/WS/UIs can abort by runId or
+    // roomId; the caller's signal (if any) chains into it.
+    const runController = new AbortController();
+    const onExternalAbort = () => {
+      // A caller aborting without a specific reason (plain controller.abort())
+      // is a user-initiated stop, same as the registry's RunAbortError.
+      const reason = options.abortSignal?.reason as unknown;
+      const isDefaultAbort = reason == null || (reason instanceof Error && reason.name === 'AbortError');
+      runController.abort(isDefaultAbort ? new RunAbortError() : reason);
+    };
+    if (options.abortSignal) {
+      if (options.abortSignal.aborted) onExternalAbort();
+      else options.abortSignal.addEventListener('abort', onExternalAbort, { once: true });
     }
+    this.manager.registerRun(runId, effectiveRoom.id, runController);
+    const runSignal = runController.signal;
 
     try {
-      if (effectiveRoom.mode === 'mention') {
-        for (const target of routing.targetInstances) {
-          if (options.abortSignal?.aborted) break;
-          if (turnsExecuted >= maxTurns) break;
+      const maxTurns = effectiveRoom.maxTurnsPerRun || 10;
+      const budget = new RunBudget({
+        maxTurns,
+        maxRuntimeMs: effectiveRoom.maxRuntimeSec ? effectiveRoom.maxRuntimeSec * 1000 : undefined,
+        maxCostUSD: effectiveRoom.maxCostUSD,
+      });
+      const allInstances = await this.manager.listAgentInstances();
+      const members = await this.manager.listRoomMembers(effectiveRoom.id);
+      const roomMemberInstanceIds = new Set(
+        members.filter((m) => m.memberType === 'agent_instance').map((m) => m.memberId)
+      );
 
-          turnsExecuted++;
-          const msg = await this.executeSingleTurn(
-            runId,
-            effectiveRoom,
-            target,
-            options.triggerMessage,
-            producedMessages,
-            turnsExecuted,
-            options
-          );
-          if (msg) {
-            producedMessages.push(msg);
-            totalTokens += 150;
-            totalCost += 0.0005;
-          }
-        }
-      } else if (effectiveRoom.mode === 'panel') {
-        for (const inst of routing.targetInstances) {
-          if (options.abortSignal?.aborted) break;
-          if (turnsExecuted >= maxTurns) break;
+      // Filter instances strictly to those that belong to the room AND are active.
+      const activeRoomInstances = allInstances.filter(
+        (i) => roomMemberInstanceIds.has(i.id) && i.isActive !== false
+      );
 
-          turnsExecuted++;
-          const msg = await this.executeSingleTurn(
-            runId,
-            effectiveRoom,
-            inst,
-            options.triggerMessage,
-            producedMessages,
-            turnsExecuted,
-            options
-          );
-          if (msg) {
-            producedMessages.push(msg);
-            totalTokens += 150;
-            totalCost += 0.0005;
-          }
-        }
-      } else if (effectiveRoom.mode === 'debate' || effectiveRoom.mode === 'round_robin') {
-        for (let t = 0; t < Math.min(maxTurns, routing.targetInstances.length * 2); t++) {
-          if (options.abortSignal?.aborted) break;
-          const inst = routing.targetInstances[t % routing.targetInstances.length];
-          if (!inst) break;
+      // Resolve routing
+      const routing = this.resolveRouting(effectiveRoom, options.triggerMessage, activeRoomInstances);
 
-          turnsExecuted++;
-          const latestContext = producedMessages[producedMessages.length - 1]?.content || options.triggerMessage;
-          const msg = await this.executeSingleTurn(
-            runId,
-            effectiveRoom,
-            inst,
-            latestContext,
-            producedMessages,
-            turnsExecuted,
-            options
-          );
-          if (msg) {
-            producedMessages.push(msg);
-            totalTokens += 150;
-            totalCost += 0.0005;
-          }
-        }
-      } else if (effectiveRoom.mode === 'coordinator') {
-        const coordinator = routing.targetInstances[0];
-        if (coordinator) {
-          turnsExecuted++;
-          const msg = await this.executeSingleTurn(
-            runId,
-            effectiveRoom,
-            coordinator,
-            `Analyze the following request and coordinate with specialist personas: ${options.triggerMessage}`,
-            producedMessages,
-            turnsExecuted,
-            options
-          );
-          if (msg) producedMessages.push(msg);
-        }
-      }
-
-      const finalTrace: ChatDeliveryTrace = {
-        ...routing.trace,
-        state: options.abortSignal?.aborted ? 'failed' : 'completed',
-      };
-
-      this.manager.eventBus.emit('run:completed', {
-        runId,
-        totalTurns: turnsExecuted,
-        totalCost,
+      // 1. Post user trigger message with delivery trace attached
+      const userMsg = await this.manager.postMessage({
+        roomId: effectiveRoom.id,
+        senderType: 'user',
+        senderId: options.senderUserId,
+        senderDisplayName: options.senderDisplayName,
+        content: options.triggerMessage,
+        contentType: 'text',
+        deliveryTrace: routing.trace,
       });
 
-      return {
-        runId,
-        roomId: effectiveRoom.id,
-        status: options.abortSignal?.aborted ? 'cancelled' : 'completed',
-        turnsExecuted,
-        messages: producedMessages,
-        tokensUsed: totalTokens,
-        costUSD: totalCost,
-        deliveryTrace: finalTrace,
-      };
-    } catch (err) {
-      const errorMsg = (err as Error).message;
-      this.manager.eventBus.emit('run:failed', { runId, error: errorMsg });
+      const producedMessages: Message[] = [userMsg];
+      let turnsExecuted = 0;
+      let totalTokens = 0;
+      let totalCost = 0;
 
-      return {
-        runId,
-        roomId: effectiveRoom.id,
-        status: 'failed',
-        turnsExecuted,
-        messages: producedMessages,
-        tokensUsed: totalTokens,
-        costUSD: totalCost,
-        deliveryTrace: {
-          ...routing.trace,
-          state: 'failed',
-          reasonCode: 'execution_error',
-          feedbackMessage: `Execution error: ${errorMsg}`,
+      this.manager.eventBus.emit(
+        'run:started',
+        {
+          runId,
+          roomId: effectiveRoom.id,
+          mode: effectiveRoom.mode,
+          activeInstances: routing.targetInstances.map((i) => i.id),
         },
-        error: errorMsg,
-      };
+        { runId, roomId: effectiveRoom.id }
+      );
+
+      if (!routing.shouldExecute || routing.targetInstances.length === 0) {
+        // If actionable feedback message is provided, post a helpful system message in the room
+        if (routing.systemFeedbackMessage) {
+          const feedbackMsg = await this.manager.postMessage({
+            roomId: effectiveRoom.id,
+            senderType: 'user',
+            senderId: 'system',
+            senderDisplayName: 'AgentDeck Routing',
+            content: routing.systemFeedbackMessage,
+            contentType: 'system',
+            deliveryTrace: routing.trace,
+          });
+          producedMessages.push(feedbackMsg);
+        }
+
+        this.manager.eventBus.emit(
+          'run:completed',
+          {
+            runId,
+            totalTurns: 0,
+            totalCost: 0,
+          },
+          { runId, roomId: effectiveRoom.id }
+        );
+
+        return {
+          runId,
+          roomId: effectiveRoom.id,
+          status: 'completed',
+          turnsExecuted: 0,
+          messages: producedMessages,
+          tokensUsed: 0,
+          costUSD: 0,
+          deliveryTrace: routing.trace,
+        };
+      }
+
+      try {
+        if (effectiveRoom.mode === 'mention') {
+          for (const target of routing.targetInstances) {
+            if (runSignal.aborted) break;
+            if (!budget.check().allowed) break;
+
+            turnsExecuted++;
+            budget.noteTurn();
+            const msg = await this.executeSingleTurn(
+              runId,
+              effectiveRoom,
+              target,
+              options.triggerMessage,
+              producedMessages,
+              turnsExecuted,
+              options,
+              runSignal
+            );
+            if (msg) {
+              producedMessages.push(msg);
+              totalTokens += 150;
+              totalCost += 0.0005;
+              budget.noteCost(0.0005);
+            }
+          }
+        } else if (effectiveRoom.mode === 'panel') {
+          for (const inst of routing.targetInstances) {
+            if (runSignal.aborted) break;
+            if (!budget.check().allowed) break;
+
+            turnsExecuted++;
+            budget.noteTurn();
+            const msg = await this.executeSingleTurn(
+              runId,
+              effectiveRoom,
+              inst,
+              options.triggerMessage,
+              producedMessages,
+              turnsExecuted,
+              options,
+              runSignal
+            );
+            if (msg) {
+              producedMessages.push(msg);
+              totalTokens += 150;
+              totalCost += 0.0005;
+              budget.noteCost(0.0005);
+            }
+          }
+        } else if (effectiveRoom.mode === 'debate' || effectiveRoom.mode === 'round_robin') {
+          for (let t = 0; t < Math.min(maxTurns, routing.targetInstances.length * 2); t++) {
+            if (runSignal.aborted) break;
+            if (!budget.check().allowed) break;
+            const inst = routing.targetInstances[t % routing.targetInstances.length];
+            if (!inst) break;
+
+            turnsExecuted++;
+            budget.noteTurn();
+            const latestContext = producedMessages[producedMessages.length - 1]?.content || options.triggerMessage;
+            const msg = await this.executeSingleTurn(
+              runId,
+              effectiveRoom,
+              inst,
+              latestContext,
+              producedMessages,
+              turnsExecuted,
+              options,
+              runSignal
+            );
+            if (msg) {
+              producedMessages.push(msg);
+              totalTokens += 150;
+              totalCost += 0.0005;
+              budget.noteCost(0.0005);
+            }
+          }
+        } else if (effectiveRoom.mode === 'coordinator') {
+          const coordinator = routing.targetInstances[0];
+          if (coordinator && !runSignal.aborted && budget.check().allowed) {
+            turnsExecuted++;
+            budget.noteTurn();
+            const msg = await this.executeSingleTurn(
+              runId,
+              effectiveRoom,
+              coordinator,
+              `Analyze the following request and coordinate with specialist personas: ${options.triggerMessage}`,
+              producedMessages,
+              turnsExecuted,
+              options,
+              runSignal
+            );
+            if (msg) producedMessages.push(msg);
+          }
+        }
+
+        const aborted = runSignal.aborted;
+        const finalTrace: ChatDeliveryTrace = aborted
+          ? {
+              ...routing.trace,
+              state: 'cancelled',
+              reasonCode: 'run_aborted',
+              feedbackMessage: 'Run aborted before completion.',
+            }
+          : {
+              ...routing.trace,
+              state: 'completed',
+            };
+
+        if (aborted) {
+          this.manager.eventBus.emit(
+            'run:cancelled',
+            { runId, roomId: effectiveRoom.id, totalTurns: turnsExecuted },
+            { runId, roomId: effectiveRoom.id }
+          );
+        } else {
+          this.manager.eventBus.emit(
+            'run:completed',
+            {
+              runId,
+              totalTurns: turnsExecuted,
+              totalCost,
+            },
+            { runId, roomId: effectiveRoom.id }
+          );
+        }
+
+        return {
+          runId,
+          roomId: effectiveRoom.id,
+          status: aborted ? 'cancelled' : 'completed',
+          turnsExecuted,
+          messages: producedMessages,
+          tokensUsed: totalTokens,
+          costUSD: totalCost,
+          deliveryTrace: finalTrace,
+        };
+      } catch (err) {
+        const errorMsg = (err as Error).message;
+        this.manager.eventBus.emit(
+          'run:failed',
+          { runId, error: errorMsg },
+          { runId, roomId: effectiveRoom.id }
+        );
+
+        return {
+          runId,
+          roomId: effectiveRoom.id,
+          status: 'failed',
+          turnsExecuted,
+          messages: producedMessages,
+          tokensUsed: totalTokens,
+          costUSD: totalCost,
+          deliveryTrace: {
+            ...routing.trace,
+            state: 'failed',
+            reasonCode: 'execution_error',
+            feedbackMessage: `Execution error: ${errorMsg}`,
+          },
+          error: errorMsg,
+        };
+      }
+    } finally {
+      this.manager.unregisterRun(runId);
+      options.abortSignal?.removeEventListener('abort', onExternalAbort);
     }
   }
 
@@ -468,7 +581,8 @@ export class MultiAgentOrchestrationEngine {
     triggerText: string,
     history: Message[],
     turnIndex: number,
-    options: OrchestrationRunOptions
+    options: OrchestrationRunOptions,
+    runSignal: AbortSignal
   ): Promise<Message | null> {
     const adapter = this.manager.getAdapter(instance.installation.definitionId);
     if (!adapter) return null;
@@ -486,29 +600,83 @@ export class MultiAgentOrchestrationEngine {
       triggerMessage: triggerText,
     });
 
+    const emitMeta = { runId, roomId: room.id, instanceId: instance.id };
+    const turnInfo = {
+      runId,
+      roomId: room.id,
+      instanceId: instance.id,
+      instanceName: instance.name,
+      turnIndex,
+    };
+    this.manager.eventBus.emit('run:turn:started', turnInfo, emitMeta);
+
+    // Per-turn controller chained onto the run signal with {once} + removal in
+    // finally — a long run must not accumulate listeners on the shared signal.
     const abortCtrl = new AbortController();
-    if (options.abortSignal) {
-      options.abortSignal.addEventListener('abort', () => abortCtrl.abort());
-    }
+    const onRunAbort = () => abortCtrl.abort(runSignal.reason);
+    if (runSignal.aborted) onRunAbort();
+    else runSignal.addEventListener('abort', onRunAbort, { once: true });
+
+    // Per-turn wall clock, distinct from the run-level maxRuntimeSec cap.
+    const timeoutMs =
+      options.turnTimeoutMs ??
+      (room.turnTimeoutSec ? room.turnTimeoutSec * 1000 : DEFAULT_INTEROP_LIMITS.turnTimeoutMs);
+    const timeoutTimer = setTimeout(
+      () => abortCtrl.abort(new TurnTimeoutError(`Turn timed out after ${Math.round(timeoutMs / 1000)}s`)),
+      timeoutMs
+    );
+
+    // Coalesced streaming: buffer chunks and flush on a short timer with a
+    // monotonic seq, so the event bus (and each WebSocket) sees a bounded rate.
+    let seq = 0;
+    let pendingChunk = '';
+    let flushTimer: NodeJS.Timeout | null = null;
+    const flushChunks = () => {
+      if (flushTimer) {
+        clearTimeout(flushTimer);
+        flushTimer = null;
+      }
+      if (!pendingChunk) return;
+      const text = pendingChunk;
+      pendingChunk = '';
+      this.manager.eventBus.emit('run:chunk', { ...turnInfo, seq: seq++, text }, emitMeta);
+    };
 
     let answerText = '';
     try {
-      const execResult = await adapter.execute({
+      const execution = adapter.execute({
         runId,
         sessionId: `session-${instance.id}`,
         promptTree,
         workspaceDir: room.workspacePath,
         abortSignal: abortCtrl.signal,
+        turnRequest: {
+          runId,
+          sessionId: `session-${instance.id}`,
+          instanceId: instance.id,
+          roomId: room.id,
+          messages: [],
+          promptTree,
+          workspaceDir: room.workspacePath,
+          timeoutMs,
+        },
         onChunk: (chunk) => {
           answerText += chunk;
+          pendingChunk += chunk;
+          if (!flushTimer) flushTimer = setTimeout(flushChunks, CHUNK_FLUSH_MS);
           options.onChunk?.(instance.name, chunk);
         },
       });
+      const execResult = await raceWithAbort(execution, abortCtrl.signal);
 
       const rawContent = (execResult.content || answerText || '').trim();
       if (!rawContent) {
         throw new Error(`EMPTY_AGENT_RESPONSE: ${instance.name} produced no response.`);
       }
+
+      // Emit any buffered tail before the persisted message lands, so clients
+      // never see message:created while chunks are still trailing in.
+      flushChunks();
 
       const msg = await this.manager.postMessage({
         roomId: room.id,
@@ -517,14 +685,25 @@ export class MultiAgentOrchestrationEngine {
         senderDisplayName: `${instance.persona.avatarEmoji || '🤖'} ${instance.name}`,
         content: rawContent,
         contentType: 'text',
+        turnIndex,
       });
 
+      this.manager.eventBus.emit('run:turn:completed', { ...turnInfo, messageId: msg.id }, emitMeta);
       options.onTurnComplete?.(instance.name, msg);
       return msg;
     } catch (err) {
+      const abortReason = abortCtrl.signal.aborted ? (abortCtrl.signal.reason as unknown) : undefined;
+
+      // A user-initiated stop is not a failure: post nothing into the room.
+      if (abortReason instanceof RunAbortError) {
+        return null;
+      }
+
       const rawError = (err as Error).message;
       let sanitizedReason = 'Agent execution failed.';
-      if (rawError.includes('not found') || rawError.includes('ENOENT')) {
+      if (abortReason instanceof TurnTimeoutError) {
+        sanitizedReason = `Turn exceeded its ${Math.round(timeoutMs / 1000)}s timeout.`;
+      } else if (rawError.includes('not found') || rawError.includes('ENOENT')) {
         sanitizedReason = 'Agent binary or executable was not found.';
       } else if (rawError.includes('rejected by security policy')) {
         sanitizedReason = 'Invalid runtime argument rejected by security policy.';
@@ -535,6 +714,8 @@ export class MultiAgentOrchestrationEngine {
         sanitizedReason = firstLine;
       }
 
+      this.manager.eventBus.emit('run:turn:failed', { ...turnInfo, error: sanitizedReason }, emitMeta);
+
       const userFacingErrorMessage = `⚠️ Agent execution failed.\nReason: ${sanitizedReason}\nRun \`agentdeck doctor ${instance.installation.definitionId}\` or inspect system logs for details.`;
 
       const fallbackMsg = await this.manager.postMessage({
@@ -544,8 +725,13 @@ export class MultiAgentOrchestrationEngine {
         senderDisplayName: `${instance.persona.avatarEmoji || '🤖'} ${instance.name}`,
         content: userFacingErrorMessage,
         contentType: 'text',
+        turnIndex,
       });
       return fallbackMsg;
+    } finally {
+      clearTimeout(timeoutTimer);
+      runSignal.removeEventListener('abort', onRunAbort);
+      flushChunks();
     }
   }
 }

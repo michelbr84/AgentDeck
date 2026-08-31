@@ -28,6 +28,7 @@ import {
   ChatDeliveryTrace,
 } from '@agentdeck/protocol';
 import { ensureSecureDirectory } from '@agentdeck/security';
+import { RunAbortError } from './run-control.js';
 import path from 'node:path';
 import os from 'node:os';
 import { isOutdated as isVersionOutdated } from '@agentdeck/adapters';
@@ -124,6 +125,9 @@ export class AgentDeckManager {
   public readonly orchestrationEngine: MultiAgentOrchestrationEngine;
 
   private adapterRegistry = new Map<string, AgentAdapter>();
+
+  /** Live orchestration runs, so REST/WS/UIs can reach a run's abort signal. */
+  private activeRuns = new Map<string, { controller: AbortController; roomId: string }>();
 
   private constructor(db: AgentDeckDatabase, eventBus?: EventBus) {
     this.db = db;
@@ -661,6 +665,48 @@ export class AgentDeckManager {
   }
 
   // ==========================================
+  // ACTIVE RUN REGISTRY (abort controls)
+  // ==========================================
+  public registerRun(runId: string, roomId: string, controller: AbortController): void {
+    this.activeRuns.set(runId, { controller, roomId });
+  }
+
+  public unregisterRun(runId: string): void {
+    this.activeRuns.delete(runId);
+  }
+
+  /** Aborts one run. Returns false when the run is unknown or already done. */
+  public abortRun(runId: string): boolean {
+    const run = this.activeRuns.get(runId);
+    if (!run) return false;
+    run.controller.abort(new RunAbortError());
+    return true;
+  }
+
+  /** Aborts every live run in a room; returns how many were signalled. */
+  public abortRoomRuns(roomId: string): number {
+    let aborted = 0;
+    for (const run of this.activeRuns.values()) {
+      if (run.roomId === roomId) {
+        run.controller.abort(new RunAbortError());
+        aborted++;
+      }
+    }
+    return aborted;
+  }
+
+  public hasActiveRunForRoom(roomId: string): boolean {
+    for (const run of this.activeRuns.values()) {
+      if (run.roomId === roomId) return true;
+    }
+    return false;
+  }
+
+  public listActiveRuns(): Array<{ runId: string; roomId: string }> {
+    return Array.from(this.activeRuns.entries(), ([runId, run]) => ({ runId, roomId: run.roomId }));
+  }
+
+  // ==========================================
   // ROOMS & MESSAGING
   // ==========================================
   public async listRooms(): Promise<Room[]> {
@@ -674,6 +720,7 @@ export class AgentDeckManager {
       maxTurnsPerRun: r.turn_limit,
       maxRuntimeSec: r.runtime_limit_sec,
       maxCostUSD: r.cost_limit_usd || undefined,
+      turnTimeoutSec: r.turn_timeout_sec || undefined,
       workspacePath: r.workspace_path || undefined,
       createdAt: r.created_at,
       updatedAt: r.updated_at,
@@ -692,6 +739,7 @@ export class AgentDeckManager {
       maxTurnsPerRun: r.turn_limit,
       maxRuntimeSec: r.runtime_limit_sec,
       maxCostUSD: r.cost_limit_usd || undefined,
+      turnTimeoutSec: r.turn_timeout_sec || undefined,
       workspacePath: r.workspace_path || undefined,
       createdAt: r.created_at,
       updatedAt: r.updated_at,
@@ -706,6 +754,10 @@ export class AgentDeckManager {
     workspacePath?: string;
     memberInstanceIds?: string[];
     memberUserIds?: string[];
+    maxTurnsPerRun?: number;
+    maxRuntimeSec?: number;
+    maxCostUSD?: number;
+    turnTimeoutSec?: number;
   }): Promise<Room> {
     const id = `room-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`;
     const now = new Date().toISOString();
@@ -718,8 +770,10 @@ export class AgentDeckManager {
         description: params.description || '',
         mode: params.mode || 'mention',
         default_agent_instance_id: params.defaultAgentInstanceId || null,
-        turn_limit: 10,
-        runtime_limit_sec: 600,
+        turn_limit: params.maxTurnsPerRun ?? 10,
+        runtime_limit_sec: params.maxRuntimeSec ?? 600,
+        cost_limit_usd: params.maxCostUSD ?? null,
+        turn_timeout_sec: params.turnTimeoutSec ?? null,
         workspace_path: params.workspacePath || null,
       })
       .execute();
@@ -761,8 +815,10 @@ export class AgentDeckManager {
       description: params.description || '',
       mode: params.mode || 'mention',
       defaultAgentInstanceId: params.defaultAgentInstanceId || undefined,
-      maxTurnsPerRun: 10,
-      maxRuntimeSec: 600,
+      maxTurnsPerRun: params.maxTurnsPerRun ?? 10,
+      maxRuntimeSec: params.maxRuntimeSec ?? 600,
+      maxCostUSD: params.maxCostUSD,
+      turnTimeoutSec: params.turnTimeoutSec,
       workspacePath: params.workspacePath,
       createdAt: now,
       updatedAt: now,
@@ -777,6 +833,10 @@ export class AgentDeckManager {
       mode?: 'mention' | 'panel' | 'debate' | 'round_robin' | 'coordinator';
       defaultAgentInstanceId?: string | null;
       workspacePath?: string | null;
+      maxTurnsPerRun?: number;
+      maxRuntimeSec?: number;
+      maxCostUSD?: number | null;
+      turnTimeoutSec?: number | null;
     }
   ): Promise<void> {
     const patch: Record<string, unknown> = {
@@ -787,6 +847,10 @@ export class AgentDeckManager {
     if (updates.mode !== undefined) patch['mode'] = updates.mode;
     if (updates.defaultAgentInstanceId !== undefined) patch['default_agent_instance_id'] = updates.defaultAgentInstanceId;
     if (updates.workspacePath !== undefined) patch['workspace_path'] = updates.workspacePath;
+    if (updates.maxTurnsPerRun !== undefined) patch['turn_limit'] = updates.maxTurnsPerRun;
+    if (updates.maxRuntimeSec !== undefined) patch['runtime_limit_sec'] = updates.maxRuntimeSec;
+    if (updates.maxCostUSD !== undefined) patch['cost_limit_usd'] = updates.maxCostUSD;
+    if (updates.turnTimeoutSec !== undefined) patch['turn_timeout_sec'] = updates.turnTimeoutSec;
 
     await this.db.db
       .updateTable('rooms')
