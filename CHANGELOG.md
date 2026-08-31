@@ -14,6 +14,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **REST**: `GET /api/v1/agents/llm`, `GET|PUT /api/v1/llm-routing`, `POST /api/v1/llm-routing/apply`, `GET|PUT /api/v1/instances/:id/llm-override`, `GET /api/v1/secrets/status`, `PUT /api/v1/secrets/:provider`, `POST /api/v1/providers/test`, `GET /api/v1/providers/catalog`, `POST /api/v1/agents/:id/install`.
 - **Database**: migration v3 adds the `llm_routing` table and `agent_instances.llm_override_json`.
 - **CI**: Gitleaks scans the full history (`fetch-depth: 0`); `.gitleaks.toml` allowlists the fake-credential test fixtures.
+- **Web Deck token sign-in**: the Web Deck now works with `agentdeck web --token <secret>` — every API call sends `Authorization: Bearer <token>`, a 401 opens an "Authentication Required" prompt to paste the token, and opening `http://127.0.0.1:4321/#token=<secret>` once signs the tab in (`?token=` is accepted too; the token is kept in that tab's `sessionStorage` and stripped from the URL — the fragment form never reaches the server or its logs). Previously every UI call got 401 in token mode.
+- **Tests are type-checked**: `pnpm typecheck` now also runs `tsc -p tsconfig.tests.json` over every `*.test.ts` (they were outside the `tsc -b` graph, which is how `new AgentDeckDatabase(<string>)` compiled); 16 stale fixtures were fixed on the way.
 
 ### Changed
 - **GarraIA installer**: `install()` now runs the official installer (`https://garraia.org/install.sh`, prebuilt release asset with `.sha256` verification) instead of throwing. Supersedes the 1.1.0 "GarraIA repositioning" note; the experimental/dogfooding description stays.
@@ -23,6 +25,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 - **Groups page**: "set default agent" now sends `defaultAgentInstanceId` (the key the server reads) instead of `agentInstanceId`, which silently cleared the room's default.
 - **MCP server version**: `initialize` reports `AGENTDECK_VERSION` instead of a hardcoded `1.0.4`.
+- **Version check no longer pinned by one network blip**: `AgentDeckManager` cached a failed latest-version lookup (`latestVersion: null` — reachable through plugin adapters and hard failures; the built-in adapters fall back to a pinned version) for the full hour, and since `isOutdated(v, null)` is false, a single transient failure reported every agent as up to date for an hour. A failed or `null` lookup is now retried after 60 s (successes keep the 1 h TTL), and the entry is dropped whenever what is installed changes — `POST /api/v1/agents/:id/install`, CLI installs in `agentdeck agents setup` and the `agentdeck setup` wizard, and every upgrade (even a failed one) through the manager's hook-injected `TransactionalUpgradeEngine` — via the new `AgentDeckManager.invalidateVersionCache(adapterId?)`.
+- **`--host` with an IPv6 literal**: `agentdeck web --host [::1]` no longer crashes at bind time (Node wants the bare `::1`; the banner URL keeps the brackets).
 - **Tests**: the `database-migration` and `routing-service` suites pass `{ dbPath }` to `AgentDeckDatabase` (a bare string opened an anonymous in-memory database) and assert the file exists; `version-consistency` no longer creates a real SQLite database under `~/.agentdeck`.
 
 ### Security
