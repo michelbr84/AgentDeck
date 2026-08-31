@@ -1,4 +1,4 @@
-import { AgentDeckDatabase, createDatabase } from '@agentdeck/database';
+import { AgentDeckDatabase, createDatabase, sql } from '@agentdeck/database';
 import { EventBus } from './event-bus.js';
 import { PromptComposer } from './prompt-composer.js';
 import { TransactionalUpgradeEngine } from './upgrade-engine.js';
@@ -22,6 +22,7 @@ import {
   UserProfile,
   Room,
   Message,
+  MessagePage,
   HealthCheckLevel,
   HealthReport,
   ChatDeliveryTrace,
@@ -34,6 +35,85 @@ import { isOutdated as isVersionOutdated } from '@agentdeck/adapters';
 export interface ManagerOptions {
   db?: AgentDeckDatabase;
   eventBus?: EventBus;
+}
+
+export interface GetRoomMessagesOptions {
+  limit?: number;
+  /** Opaque cursor — return only messages strictly OLDER than this position. */
+  before?: string;
+  /** Opaque cursor — return only messages strictly NEWER than this position. */
+  after?: string;
+}
+
+/**
+ * SQLite's CURRENT_TIMESTAMP default stored `YYYY-MM-DD HH:MM:SS` (UTC, second
+ * granularity). New writes keep that shape but append milliseconds, so plain
+ * string ordering stays correct across legacy and new rows — an ISO `T`
+ * separator would sort AFTER every legacy timestamp of the same day.
+ */
+function sqliteTimestamp(date: Date): string {
+  return date.toISOString().replace('T', ' ').replace('Z', '');
+}
+
+/**
+ * Messages posted within the same clock millisecond would otherwise tie on
+ * created_at and fall back to the random id suffix, scrambling display order.
+ * A per-process monotonic clock guarantees each post gets a strictly greater
+ * timestamp (drifting at most a few ms ahead under bursts).
+ */
+let lastMessageTimestampMs = 0;
+function nextMessageDate(): Date {
+  const now = Date.now();
+  lastMessageTimestampMs = now > lastMessageTimestampMs ? now : lastMessageTimestampMs + 1;
+  return new Date(lastMessageTimestampMs);
+}
+
+/** Normalizes a stored timestamp (either shape) back to ISO-8601 UTC. */
+function isoTimestamp(raw: string): string {
+  return raw.includes('T') ? raw : `${raw.replace(' ', 'T')}Z`;
+}
+
+interface MessageCursor {
+  createdAt: string;
+  turnIndex: number;
+  id: string;
+}
+
+interface MessageRow {
+  id: string;
+  room_id: string;
+  thread_id: string | null;
+  sender_type: string;
+  sender_id: string;
+  sender_display_name: string;
+  content: string;
+  content_type: string;
+  turn_index: number | null;
+  delivery_trace_json: string | null;
+  raw_payload_json: string | null;
+  created_at: string;
+}
+
+function encodeMessageCursor(cursor: MessageCursor): string {
+  return Buffer.from(JSON.stringify([cursor.createdAt, cursor.turnIndex, cursor.id]), 'utf8').toString('base64url');
+}
+
+function decodeMessageCursor(cursor: string): MessageCursor {
+  try {
+    const parsed = JSON.parse(Buffer.from(cursor, 'base64url').toString('utf8')) as unknown;
+    if (
+      Array.isArray(parsed) &&
+      parsed.length === 3 &&
+      typeof parsed[0] === 'string' &&
+      typeof parsed[1] === 'number' &&
+      typeof parsed[2] === 'string'
+    ) {
+      return { createdAt: parsed[0], turnIndex: parsed[1], id: parsed[2] };
+    }
+  } catch {
+    // fall through to the shared error below
+  }
+  throw Object.assign(new Error('Invalid message cursor'), { statusCode: 400, code: 'INVALID_CURSOR' });
 }
 
 export class AgentDeckManager {
@@ -784,16 +864,90 @@ export class AgentDeckManager {
       .execute();
   }
 
-  public async getRoomMessages(roomId: string, limit = 50): Promise<Message[]> {
-    const rows = await this.db.db
-      .selectFrom('messages')
-      .selectAll()
-      .where('room_id', '=', roomId)
-      .orderBy('created_at', 'asc')
-      .limit(limit)
+  /**
+   * Returns the newest window of a room's history in ascending display order.
+   * The positional-number form keeps the historical `Message[]` shape; the
+   * options form adds keyset pagination (`before` pages older, `after` pages
+   * newer) and returns a `MessagePage` envelope. Ordering — and the cursor —
+   * is the triple (created_at, turn_index, id) so concurrent same-timestamp
+   * turns page without gaps or duplicates.
+   */
+  public async getRoomMessages(roomId: string, limit?: number): Promise<Message[]>;
+  public async getRoomMessages(roomId: string, opts: GetRoomMessagesOptions): Promise<MessagePage>;
+  public async getRoomMessages(
+    roomId: string,
+    opts?: number | GetRoomMessagesOptions
+  ): Promise<Message[] | MessagePage> {
+    const paged = typeof opts === 'object' && opts !== null;
+    const limit = Math.max(1, (paged ? opts.limit : opts) ?? 50);
+    const before = paged ? opts.before : undefined;
+    const after = paged ? opts.after : undefined;
+
+    const turnIndexExpr = sql<number>`COALESCE(turn_index, -1)`;
+
+    let query = this.db.db.selectFrom('messages').selectAll().where('room_id', '=', roomId);
+
+    if (before) {
+      const c = decodeMessageCursor(before);
+      query = query.where((eb) =>
+        eb.or([
+          eb('created_at', '<', c.createdAt),
+          eb.and([eb('created_at', '=', c.createdAt), eb(turnIndexExpr, '<', c.turnIndex)]),
+          eb.and([
+            eb('created_at', '=', c.createdAt),
+            eb(turnIndexExpr, '=', c.turnIndex),
+            eb('id', '<', c.id),
+          ]),
+        ])
+      );
+    }
+    if (after) {
+      const c = decodeMessageCursor(after);
+      query = query.where((eb) =>
+        eb.or([
+          eb('created_at', '>', c.createdAt),
+          eb.and([eb('created_at', '=', c.createdAt), eb(turnIndexExpr, '>', c.turnIndex)]),
+          eb.and([
+            eb('created_at', '=', c.createdAt),
+            eb(turnIndexExpr, '=', c.turnIndex),
+            eb('id', '>', c.id),
+          ]),
+        ])
+      );
+    }
+
+    // `after` pages forward in ascending order; every other form returns the
+    // newest window, fetched descending and reversed back to ascending.
+    const ascending = Boolean(after);
+    const direction = ascending ? 'asc' : 'desc';
+    const rows = await query
+      .orderBy('created_at', direction)
+      .orderBy(turnIndexExpr, direction)
+      .orderBy('id', direction)
+      .limit(limit + 1)
       .execute();
 
-    return rows.map((r) => ({
+    const hasMore = rows.length > limit;
+    const page = rows.slice(0, limit);
+    if (!ascending) page.reverse();
+
+    const items = page.map((r) => this.mapMessageRow(r));
+    if (!paged) return items;
+
+    // Continuation edge: oldest row when paging back, newest when paging forward.
+    const edge = ascending ? page[page.length - 1] : page[0];
+    return {
+      items,
+      hasMore,
+      nextCursor:
+        hasMore && edge
+          ? encodeMessageCursor({ createdAt: edge.created_at, turnIndex: edge.turn_index ?? -1, id: edge.id })
+          : undefined,
+    };
+  }
+
+  private mapMessageRow(r: MessageRow): Message {
+    return {
       id: r.id,
       roomId: r.room_id,
       threadId: r.thread_id || undefined,
@@ -802,11 +956,11 @@ export class AgentDeckManager {
       senderDisplayName: r.sender_display_name,
       content: r.content,
       contentType: r.content_type as 'text',
-      turnIndex: r.turn_index || undefined,
+      turnIndex: r.turn_index ?? undefined,
       deliveryTrace: r.delivery_trace_json ? JSON.parse(r.delivery_trace_json) : undefined,
       rawPayload: r.raw_payload_json ? JSON.parse(r.raw_payload_json) : undefined,
-      createdAt: r.created_at,
-    }));
+      createdAt: isoTimestamp(r.created_at),
+    };
   }
 
   public async postMessage(params: {
@@ -817,9 +971,11 @@ export class AgentDeckManager {
     content: string;
     contentType?: 'text' | 'markdown' | 'tool_call' | 'tool_result' | 'system';
     deliveryTrace?: ChatDeliveryTrace;
+    turnIndex?: number;
+    rawPayload?: Record<string, unknown>;
   }): Promise<Message> {
     const id = `msg-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`;
-    const now = new Date().toISOString();
+    const createdAt = nextMessageDate();
 
     await this.db.db
       .insertInto('messages')
@@ -831,7 +987,12 @@ export class AgentDeckManager {
         sender_display_name: params.senderDisplayName,
         content: params.content,
         content_type: params.contentType || 'text',
+        turn_index: params.turnIndex ?? null,
         delivery_trace_json: params.deliveryTrace ? JSON.stringify(params.deliveryTrace) : null,
+        raw_payload_json: params.rawPayload ? JSON.stringify(params.rawPayload) : null,
+        // Explicit millisecond-precision write; the column default only has
+        // second granularity, which made same-second ordering arbitrary.
+        created_at: sqliteTimestamp(createdAt),
       })
       .execute();
 
@@ -843,8 +1004,10 @@ export class AgentDeckManager {
       senderDisplayName: params.senderDisplayName,
       content: params.content,
       contentType: params.contentType || 'text',
+      turnIndex: params.turnIndex,
       deliveryTrace: params.deliveryTrace,
-      createdAt: now,
+      rawPayload: params.rawPayload,
+      createdAt: createdAt.toISOString(),
     };
 
     this.eventBus.emit('message:created', { message: msg });

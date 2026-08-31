@@ -566,8 +566,17 @@ export async function createAgentDeckServer(options?: ServerOptions): Promise<Ag
 
   server.get('/api/v1/rooms/:id/messages', async (req) => {
     const { id } = req.params as { id: string };
-    const msgs = await manager.getRoomMessages(id);
-    return redactSecrets(msgs);
+    const query = req.query as { limit?: string; before?: string; after?: string };
+    const paged = query.limit !== undefined || query.before !== undefined || query.after !== undefined;
+
+    // Back-compat: with no pagination params the response stays a bare array.
+    if (!paged) {
+      return redactSecrets(await manager.getRoomMessages(id));
+    }
+
+    const limit = Math.min(Math.max(1, Number(query.limit ?? 50) || 50), 100);
+    const page = await manager.getRoomMessages(id, { limit, before: query.before, after: query.after });
+    return redactSecrets(page);
   });
 
   server.post('/api/v1/rooms/:id/messages', async (req) => {

@@ -260,6 +260,19 @@ export const MessageSchema = z.object({
 });
 export type Message = z.infer<typeof MessageSchema>;
 
+/**
+ * One page of a room's message history. `items` are always in ascending
+ * display order; `nextCursor` continues in the direction of the query
+ * (older for `before`/default, newer for `after`) and is only present
+ * when `hasMore` is true.
+ */
+export const MessagePageSchema = z.object({
+  items: z.array(MessageSchema),
+  nextCursor: z.string().optional(),
+  hasMore: z.boolean(),
+});
+export type MessagePage = z.infer<typeof MessagePageSchema>;
+
 // ==========================================
 // 9. USAGE & METRICS (ESTIMATED / REPORTED)
 // ==========================================

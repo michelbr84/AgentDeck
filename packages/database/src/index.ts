@@ -7,6 +7,9 @@ import { initialMigration, v104Migration, llmRoutingMigration, Migration } from 
 
 export * from './schema.js';
 export * from './migrations.js';
+// Re-exported so consumers can build raw SQL fragments (e.g. COALESCE ordering)
+// without taking their own kysely dependency.
+export { sql } from 'kysely';
 
 export interface DatabaseOptions {
   dbPath: string;
