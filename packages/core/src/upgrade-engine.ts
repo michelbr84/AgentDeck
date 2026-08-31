@@ -130,7 +130,12 @@ export class TransactionalUpgradeEngine {
         });
       } finally {
         // What is installed may have changed even if the upgrade threw midway.
-        this.hooks?.onInstallationChanged?.(adapter.definition.id);
+        // A hook must never alter the upgrade/rollback control flow.
+        try {
+          this.hooks?.onInstallationChanged?.(adapter.definition.id);
+        } catch {
+          // ignore: a failing observer is not an upgrade failure
+        }
       }
 
       // Step 3: Health Verification
