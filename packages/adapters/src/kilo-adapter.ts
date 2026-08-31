@@ -19,6 +19,7 @@ import {
   BackupResult,
   executeSafeCommand,
 } from '@agentdeck/adapter-sdk';
+import { fetchLatestNpmVersion } from './agent-paths.js';
 
 export class KiloAdapter implements AgentAdapter {
   public readonly definition: AgentDefinition = {
@@ -168,15 +169,20 @@ export class KiloAdapter implements AgentAdapter {
         releaseNotes: 'Kilo Code CLI release',
       };
     }
-    try {
-      const res = await executeSafeCommand({ command: 'npm', args: ['view', '@kilocode/cli', 'version'] });
+    // `null` means "could not determine", never a remembered constant: the
+    // manager treats it as unknown (short retry TTL, never "outdated"), while a
+    // pinned value would show a stale "latest" and a false outdated/up-to-date.
+    const latestVersion = await fetchLatestNpmVersion('@kilocode/cli');
+    if (!latestVersion) {
       return {
-        latestVersion: res.stdout.trim() || '0.9.4',
-        releaseNotes: 'Kilo Code CLI release',
+        latestVersion: null,
+        releaseNotes: 'Could not reach the npm registry; latest version unknown.',
       };
-    } catch {
-      return { latestVersion: '0.9.4' };
     }
+    return {
+      latestVersion,
+      releaseNotes: 'Kilo Code CLI release',
+    };
   }
 
   public async checkHealth(level: HealthCheckLevel): Promise<HealthReport> {

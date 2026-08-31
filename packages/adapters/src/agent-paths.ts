@@ -8,6 +8,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
+import { executeSafeCommand } from '@agentdeck/adapter-sdk';
 
 /** `true` when the path exists and is readable. */
 export async function pathExists(p: string): Promise<boolean> {
@@ -121,5 +122,42 @@ export async function fetchLatestGithubRelease(
     return null;
   } finally {
     clearTimeout(timer);
+  }
+}
+
+/**
+ * Extracts the version `npm view <pkg> version` printed, or `null`.
+ *
+ * Kept as the full string npm reported (`2026.7.1-2`, not a truncated
+ * `2026.7.1`): the CLI wizard compares installed and latest as strings, and a
+ * lossy triple would flag every pre-release install as out of date.
+ */
+export function parseNpmVersion(raw: string): string | null {
+  const lines = raw
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter((l) => l.length > 0);
+  // For `<pkg> version` npm prints exactly one bare line (its warnings go to
+  // stderr). Anything else — error text, an empty stdout — is not a version.
+  const last = (lines[lines.length - 1] ?? '').replace(/^['"]|['"]$/g, '');
+  return /^[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/.test(last) ? last : null;
+}
+
+/**
+ * Reads a package's `latest` dist-tag from the npm registry.
+ *
+ * Same contract as `fetchLatestGithubRelease`: `null` on any failure — npm
+ * missing, offline, registry error, non-zero exit, or output that is not a
+ * version. Adapters must pass that `null` through as "unknown" rather than
+ * substituting a remembered constant; a pinned "latest" reports a phantom
+ * upgrade the day after it is written and hides every real one after that.
+ */
+export async function fetchLatestNpmVersion(pkg: string, timeoutMs = 15000): Promise<string | null> {
+  try {
+    const res = await executeSafeCommand({ command: 'npm', args: ['view', pkg, 'version'], timeoutMs });
+    if (res.exitCode !== 0) return null;
+    return parseNpmVersion(res.stdout);
+  } catch {
+    return null;
   }
 }

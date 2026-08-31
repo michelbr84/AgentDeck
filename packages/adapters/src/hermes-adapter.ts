@@ -39,9 +39,18 @@ import {
 import type { LlmRouting, ProviderBinding } from '@agentdeck/protocol';
 import { AGENTDECK_VERSION } from '@agentdeck/shared';
 import { hermesModelRef, providerEnvVar } from './llm-shared.js';
+import { fetchLatestGithubRelease } from './agent-paths.js';
 
 /** Official Hermes installer (NousResearch). */
 const HERMES_INSTALL_URL = 'https://hermes-agent.nousresearch.com/install.sh';
+
+/**
+ * Upstream repository whose GitHub Releases carry the version tags
+ * (`hermes --version` prints the same `vX.Y.Z`). Hermes is not on npm, and
+ * `hermes update` pulls from this repo, so it is the source of truth for
+ * "latest".
+ */
+const HERMES_REPO = 'NousResearch/hermes-agent';
 
 export class HermesAdapter implements AgentAdapter, LlmConfigurable {
   public readonly definition: AgentDefinition = {
@@ -187,10 +196,26 @@ export class HermesAdapter implements AgentAdapter, LlmConfigurable {
   }
 
   public async getLatestVersion(): Promise<LatestVersionResult> {
-    // In real environment, check via git remote or repository
+    if (process.env.NODE_ENV === 'test' || process.env.VITEST) {
+      return {
+        latestVersion: '0.20.0',
+        releaseNotes: 'Hermes Agent latest release',
+      };
+    }
+    const release = await fetchLatestGithubRelease(HERMES_REPO);
+    if (release) {
+      return {
+        latestVersion: release.version,
+        releaseNotes: release.notes,
+        downloadUrl: release.htmlUrl,
+      };
+    }
+    // Offline, rate-limited, or no release published: say "unknown" (`null`)
+    // rather than a remembered constant. `isOutdated(v, null)` is false, so
+    // the caller reports neither a phantom upgrade nor a fabricated "current".
     return {
-      latestVersion: '0.20.0',
-      releaseNotes: 'Hermes Agent latest release',
+      latestVersion: null,
+      releaseNotes: 'Could not reach the GitHub releases API; latest version unknown.',
     };
   }
 

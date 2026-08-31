@@ -40,10 +40,13 @@ export async function apiFetch<T = unknown>(
   url: string,
   init?: RequestInit,
 ): Promise<T> {
-  const res = await fetch(url, { ...init, headers: authHeaders(tokenStore.get(), init?.headers) });
+  const token = tokenStore.get();
+  const res = await fetch(url, { ...init, headers: authHeaders(token, init?.headers) });
   if (res.status === 401) {
     if (typeof window !== 'undefined') {
-      window.dispatchEvent(new CustomEvent(AUTH_REQUIRED_EVENT));
+      // Carry the token this request used, so the UI can tell "that token was
+      // rejected" from "a request from before you signed in just came back".
+      window.dispatchEvent(new CustomEvent(AUTH_REQUIRED_EVENT, { detail: { token } }));
     }
     throw new ApiAuthError('Authentication required: paste the --token secret to continue');
   }

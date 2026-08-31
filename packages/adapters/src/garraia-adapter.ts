@@ -192,12 +192,13 @@ export class GarraIAAdapter implements AgentAdapter, LlmConfigurable {
         downloadUrl: release.htmlUrl,
       };
     }
-    // Offline or rate-limited. Report the installed version so the caller sees
-    // "current" rather than being pushed into an upgrade that cannot run.
-    const detection = await this.detect();
+    // Offline or rate-limited: say "unknown" (`null`), not the literal string
+    // 'unknown' and not the installed version. `isOutdated(v, null)` is false,
+    // so the caller reports neither a phantom upgrade nor a fabricated
+    // "current", and the manager retries after its short failure TTL.
     return {
-      latestVersion: detection.version ?? 'unknown',
-      releaseNotes: 'Could not reach the GitHub releases API; version check skipped.',
+      latestVersion: null,
+      releaseNotes: 'Could not reach the GitHub releases API; latest version unknown.',
     };
   }
 

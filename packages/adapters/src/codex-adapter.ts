@@ -19,6 +19,7 @@ import {
   BackupResult,
   executeSafeCommand,
 } from '@agentdeck/adapter-sdk';
+import { fetchLatestNpmVersion } from './agent-paths.js';
 
 export class CodexAdapter implements AgentAdapter {
   public readonly definition: AgentDefinition = {
@@ -162,16 +163,20 @@ export class CodexAdapter implements AgentAdapter {
         releaseNotes: 'Official OpenAI Codex CLI agent release',
       };
     }
-    try {
-      const res = await executeSafeCommand({ command: 'npm', args: ['view', '@openai/codex', 'version'] });
-      const ver = res.stdout.trim();
+    // `null` means "could not determine", never a remembered constant: the
+    // manager treats it as unknown (short retry TTL, never "outdated"), while a
+    // pinned value would show a stale "latest" and a false outdated/up-to-date.
+    const latestVersion = await fetchLatestNpmVersion('@openai/codex');
+    if (!latestVersion) {
       return {
-        latestVersion: ver || '1.2.0',
-        releaseNotes: 'Official OpenAI Codex CLI agent release',
+        latestVersion: null,
+        releaseNotes: 'Could not reach the npm registry; latest version unknown.',
       };
-    } catch {
-      return { latestVersion: '1.2.0' };
     }
+    return {
+      latestVersion,
+      releaseNotes: 'Official OpenAI Codex CLI agent release',
+    };
   }
 
   public async checkHealth(level: HealthCheckLevel): Promise<HealthReport> {

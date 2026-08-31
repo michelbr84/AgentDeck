@@ -25,7 +25,7 @@ describe('extractTokenFromLocation', () => {
   });
 
   it('prefers the query string over the fragment', () => {
-    expect(extractTokenFromLocation({ search: '?token=from-query', hash: '#token=from-hash' })).toBe('from-query');
+    expect(extractTokenFromLocation({ search: '?token=from-query', hash: '#token=from-hash' })).toBe('from-hash');
   });
 
   it('returns null when no token is present', () => {
@@ -259,5 +259,18 @@ describe('authHeaders precedence', () => {
   it('keeps an explicit Authorization header supplied by the caller', () => {
     const h = authHeaders('stored-token', { Authorization: 'Bearer explicit' });
     expect(h.get('Authorization')).toBe('Bearer explicit');
+  });
+});
+
+describe('fragment tokens are read literally', () => {
+  it('keeps a plus sign in #token= (a fragment is not form-encoded)', () => {
+    expect(extractTokenFromLocation({ search: '', hash: '#token=a+b' })).toBe('a+b');
+  });
+  it('percent-decodes #token= and tolerates a malformed escape', () => {
+    expect(extractTokenFromLocation({ search: '', hash: '#token=a%2Bb' })).toBe('a+b');
+    expect(extractTokenFromLocation({ search: '', hash: '#token=100%' })).toBe('100%');
+  });
+  it('finds #token= among other fragment params', () => {
+    expect(extractTokenFromLocation({ search: '', hash: '#/rooms&token=xyz&x=1' })).toBe('xyz');
   });
 });
