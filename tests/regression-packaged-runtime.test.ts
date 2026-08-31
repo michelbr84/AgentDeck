@@ -53,9 +53,11 @@ describe('Packaged Runtime Regression Suite (TUI & Web Deck)', () => {
     const db = new AgentDeckDatabase({ dbPath: ':memory:', inMemory: true });
     await db.migrate();
     const manager = AgentDeckManager.createWithDatabase(db);
-    const PORT = 4329;
-    const server = await createAgentDeckServer({ port: PORT, manager });
-    await server.listen({ port: PORT, host: '127.0.0.1' });
+    // Ephemeral port: a fixed one collides with parallel suite workers.
+    const server = await createAgentDeckServer({ port: 0, manager });
+    await server.listen({ port: 0, host: '127.0.0.1' });
+    const address = server.server.address();
+    const PORT = typeof address === 'object' && address ? address.port : 0;
 
     // Assert webRoot was resolved from apps/web/dist or standard paths
     expect(server.webRoot).toBeDefined();
@@ -63,7 +65,7 @@ describe('Packaged Runtime Regression Suite (TUI & Web Deck)', () => {
     expect(fs.existsSync(path.join(server.webRoot!, 'index.html'))).toBe(true);
 
     // Assert GET / returns 200 text/html with AgentDeck title and root element
-    const rootRes = await fetch(`http://127.0.0.1:${PORT}/`);
+    const rootRes = await fetch(`http://127.0.0.1:${PORT}/`, { signal: AbortSignal.timeout(8000) });
     expect(rootRes.status).toBe(200);
     expect(rootRes.headers.get('content-type')).toContain('text/html');
     const rootBody = await rootRes.text();
@@ -73,28 +75,38 @@ describe('Packaged Runtime Regression Suite (TUI & Web Deck)', () => {
     // Extract asset script/css reference from HTML and test that the file can be fetched
     const assetMatch = rootBody.match(/src="(\/assets\/[^"]+)"/);
     if (assetMatch && assetMatch[1]) {
-      const assetRes = await fetch(`http://127.0.0.1:${PORT}${assetMatch[1]}`);
+      const assetRes = await fetch(`http://127.0.0.1:${PORT}${assetMatch[1]}`, { signal: AbortSignal.timeout(8000) });
       expect(assetRes.status).toBe(200);
     }
 
     // Assert API route works on same server
-    const healthRes = await fetch(`http://127.0.0.1:${PORT}/health`);
+    const healthRes = await fetch(`http://127.0.0.1:${PORT}/health`, { signal: AbortSignal.timeout(8000) });
     expect(healthRes.status).toBe(200);
     const health = await healthRes.json();
     expect(health.status).toBe('healthy');
 
-    // Assert WebSocket route connects cleanly
+    // Assert WebSocket route connects cleanly — with its own deadline, so a
+    // silently-unfired 'open' fails loudly instead of hanging the test.
     const ws = new WebSocket(`ws://127.0.0.1:${PORT}/ws`);
-    await new Promise<void>((resolve, reject) => {
-      ws.on('open', () => {
-        ws.send(JSON.stringify({ type: 'ping' }));
-        ws.close();
-        resolve();
+    try {
+      await new Promise<void>((resolve, reject) => {
+        const deadline = setTimeout(() => reject(new Error('WS open timed out')), 5000);
+        ws.on('open', () => {
+          clearTimeout(deadline);
+          ws.send(JSON.stringify({ type: 'ping' }));
+          resolve();
+        });
+        ws.on('error', (err) => {
+          clearTimeout(deadline);
+          reject(err);
+        });
       });
-      ws.on('error', reject);
-    });
-
-    await server.close();
-    db.close();
-  });
+    } finally {
+      ws.close();
+      await server.close();
+      db.close();
+    }
+    // Server boot + static probing contend for CPU when the whole suite runs
+    // in parallel workers; the default 5s deadline flakes under that load.
+  }, 20_000);
 });
