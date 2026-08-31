@@ -49,7 +49,9 @@ export async function writeSecureFile(filePath: string, content: string | Buffer
  */
 const SENSITIVE_KEY_PATTERNS = [
   /api[_-]?key/i,
-  /secret/i,
+  /secret$/i,
+  /^secrets?$/i,
+  /secret[_-]?key/i,
   /password/i,
   /passphrase/i,
   /credential$/i,
@@ -66,9 +68,12 @@ const SENSITIVE_KEY_PATTERNS = [
 const SECRET_VALUE_PATTERNS = [
   /sk-[a-zA-Z0-9_-]{15,}/g,                  // OpenAI / Anthropic API keys (including sk-ant-...)
   /xox[baprs]-[0-9]{10,}-[a-zA-Z0-9]{24,}/g, // Slack tokens
-  /gh[pousr]_[a-zA-Z0-9]{36,}/g,           // GitHub tokens
+  /gh[pousr]_[a-zA-Z0-9]{36,}/g,           // GitHub classic tokens (ghp_, gho_, ...)
+  /github_pat_[a-zA-Z0-9_]{22,}/g,         // GitHub fine-grained PATs
   /claude-[a-zA-Z0-9_-]{20,}/g,            // Generic Anthropic style tokens
   /ey[a-zA-Z0-9_-]+\.[a-zA-Z0-9_-]+\.[a-zA-Z0-9_-]+/g, // JWT strings
+  // PEM private-key blocks (RSA / EC / OPENSSH / ENCRYPTED / PKCS#8)
+  /-----BEGIN (?:[A-Z]+ )*PRIVATE KEY-----[\s\S]*?-----END (?:[A-Z]+ )*PRIVATE KEY-----/g,
 ];
 
 /**
