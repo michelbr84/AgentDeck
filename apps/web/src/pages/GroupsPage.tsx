@@ -143,7 +143,8 @@ export function GroupsPage({ notify }: { notify: Notify }) {
       await apiFetch(`/api/v1/rooms/${roomId}/default-agent`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ agentInstanceId: instanceId }),
+        // The server reads `defaultAgentInstanceId` (see POST /api/v1/rooms/:id/default-agent).
+        body: JSON.stringify({ defaultAgentInstanceId: instanceId }),
       });
       await load();
     } catch (err) {
