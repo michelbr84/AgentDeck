@@ -44,7 +44,7 @@ export class GarraIAAdapter implements AgentAdapter, LlmConfigurable {
   public readonly definition: AgentDefinition = {
     id: 'garraia',
     name: 'GarraIA',
-    description: 'High-performance Rust/Node universal multi-channel agent framework and gateway',
+    description: "Author's experimental Rust agent framework (GarraRUST) — bundled as a dogfooding/example adapter",
     version: '1.0.0',
     capabilities: {
       install: true,

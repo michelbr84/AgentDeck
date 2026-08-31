@@ -110,7 +110,7 @@ describe('redactSecrets — key precision', () => {
       secretKey: 'x',
       secret_key: 'x',
       sharedSecret: 'x',
-    }) as Record<string, string>;
+    }) as unknown as Record<string, unknown>;
     for (const [key, value] of Object.entries(redacted)) {
       expect(value, `${key} must be redacted`).toBe('[REDACTED_SECRET]');
     }

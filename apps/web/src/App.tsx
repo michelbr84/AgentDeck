@@ -23,8 +23,11 @@ import {
   Check,
   Zap,
   Users,
+  KeyRound,
 } from 'lucide-react';
 import { WEB_APP_VERSION } from './version';
+import { apiFetch, tokenStore } from './api';
+import { AUTH_REQUIRED_EVENT } from './auth';
 import { AgentControlPage } from './pages/AgentControlPage';
 import { GroupsPage } from './pages/GroupsPage';
 
@@ -192,11 +195,40 @@ export default function App() {
     memberInstanceIds: [],
   });
 
+  // `agentdeck web --token`: prompt for the secret when the daemon answers 401.
+  const [showAuthModal, setShowAuthModal] = useState(false);
+  const [authTokenInput, setAuthTokenInput] = useState('');
+  const [authError, setAuthError] = useState<string | null>(null);
+  const [authEpoch, setAuthEpoch] = useState(0);
+
   useEffect(() => {
+    // The one-shot ?token= / #token= sign-in is applied when api.ts is
+    // evaluated (see adoptTokenFromLocation), i.e. before this or any child
+    // page effect can issue a request. Here we only react to 401s.
+    const onAuthRequired = () => {
+      // A stored token that still gets 401 is simply wrong; say so.
+      if (tokenStore.get()) setAuthError('The daemon rejected that token. Check the value and try again.');
+      setShowAuthModal(true);
+    };
+    window.addEventListener(AUTH_REQUIRED_EVENT, onAuthRequired);
     fetchInitialData();
+    return () => window.removeEventListener(AUTH_REQUIRED_EVENT, onAuthRequired);
   }, []);
 
-  const showToast = (type: 'success' | 'error' | 'info', message: string) => {
+  const handleUnlock = (e: React.FormEvent) => {
+    e.preventDefault();
+    const token = authTokenInput.trim();
+    if (!token) return;
+    tokenStore.set(token);
+    setAuthTokenInput('');
+    setAuthError(null);
+    setShowAuthModal(false);
+    // Remount the page components so their own initial loads run again.
+    setAuthEpoch((n) => n + 1);
+    fetchInitialData();
+  };
+
+  const showToast =(type: 'success' | 'error' | 'info', message: string) => {
     setStatusNotification({ type, message });
     setTimeout(() => setStatusNotification(null), 4000);
   };
@@ -204,11 +236,11 @@ export default function App() {
   const fetchInitialData = async () => {
     try {
       const [agentsRes, instancesRes, personasRes, roomsRes, usersRes] = await Promise.all([
-        fetch('/api/v1/agents').then((r) => r.json()).catch(() => []),
-        fetch('/api/v1/instances').then((r) => r.json()).catch(() => []),
-        fetch('/api/v1/personas').then((r) => r.json()).catch(() => []),
-        fetch('/api/v1/rooms').then((r) => r.json()).catch(() => []),
-        fetch('/api/v1/users').then((r) => r.json()).catch(() => []),
+        apiFetch('/api/v1/agents').catch(() => []),
+        apiFetch('/api/v1/instances').catch(() => []),
+        apiFetch('/api/v1/personas').catch(() => []),
+        apiFetch('/api/v1/rooms').catch(() => []),
+        apiFetch('/api/v1/users').catch(() => []),
       ]);
 
       setInstallations(Array.isArray(agentsRes) ? agentsRes : []);
@@ -219,13 +251,11 @@ export default function App() {
       // profiles; seed one on first use.
       let userList = Array.isArray(usersRes) ? usersRes : [];
       if (userList.length === 0) {
-        const created = await fetch('/api/v1/users', {
+        const created = await apiFetch<{ id: string; displayName: string; avatar?: string }>('/api/v1/users', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ displayName: 'Local User', avatar: '👤' }),
-        })
-          .then((r) => r.json())
-          .catch(() => null);
+        }).catch(() => null);
         if (created?.id) userList = [created];
       }
       setUsers(userList);
@@ -253,8 +283,10 @@ export default function App() {
   const loadRoomData = async (roomId: string) => {
     try {
       const [msgsRes, membersRes] = await Promise.all([
-        fetch(`/api/v1/rooms/${roomId}/messages?limit=50`).then((r) => r.json()).catch(() => []),
-        fetch(`/api/v1/rooms/${roomId}/members`).then((r) => r.json()).catch(() => []),
+        apiFetch<Message[] | { items: Message[]; nextCursor?: string; hasMore?: boolean }>(
+          `/api/v1/rooms/${roomId}/messages?limit=50`
+        ).catch(() => [] as Message[]),
+        apiFetch<RoomMember[]>(`/api/v1/rooms/${roomId}/members`).catch(() => [] as RoomMember[]),
       ]);
       if (Array.isArray(msgsRes)) {
         // Older server without pagination: plain array, nothing further to page.
@@ -278,10 +310,9 @@ export default function App() {
     const container = messagesScrollRef.current;
     const previousHeight = container?.scrollHeight ?? 0;
     try {
-      const res = await fetch(
+      const page = await apiFetch<{ items: Message[]; nextCursor?: string; hasMore?: boolean }>(
         `/api/v1/rooms/${currentRoom.id}/messages?limit=50&before=${encodeURIComponent(olderCursor)}`
       );
-      const page = await res.json();
       if (page && Array.isArray(page.items)) {
         setMessages((prev) => [...page.items, ...prev]);
         setOlderCursor(page.nextCursor ?? null);
@@ -323,7 +354,10 @@ export default function App() {
     setIsSending(true);
 
     try {
-      const res = await fetch(`/api/v1/rooms/${currentRoom.id}/run`, {
+      const data = await apiFetch<{
+        deliveryTrace?: { state: string; feedbackMessage?: string };
+        status?: string;
+      }>(`/api/v1/rooms/${currentRoom.id}/run`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -332,17 +366,16 @@ export default function App() {
           userName: currentUser?.displayName ?? 'User',
         }),
       });
-      const data = await res.json();
-      if (data.deliveryTrace && data.deliveryTrace.state === 'no_target') {
-        showToast('info', data.deliveryTrace.feedbackMessage);
+      if (data?.deliveryTrace && data.deliveryTrace.state === 'no_target') {
+        showToast('info', data.deliveryTrace.feedbackMessage || '');
       }
-      if (data.status === 'cancelled') {
+      if (data?.status === 'cancelled') {
         showToast('info', 'Run stopped.');
       }
       await loadRoomData(currentRoom.id);
     } catch (err) {
       console.error(err);
-      showToast('error', 'Failed to dispatch message');
+      showToast('error', (err as Error).message || 'Failed to dispatch message');
     } finally {
       setIsSending(false);
     }
@@ -356,9 +389,9 @@ export default function App() {
       // Prefer the precise runId (learned from run:started over /ws); the
       // room-scoped abort covers the window before that event arrives.
       if (activeRunId) {
-        await fetch(`/api/v1/runs/${activeRunId}/abort`, { method: 'POST' });
+        await apiFetch(`/api/v1/runs/${activeRunId}/abort`, { method: 'POST' });
       } else {
-        await fetch(`/api/v1/rooms/${currentRoom.id}/abort`, { method: 'POST' });
+        await apiFetch(`/api/v1/rooms/${currentRoom.id}/abort`, { method: 'POST' });
       }
     } catch (err) {
       console.error(err);
@@ -472,20 +505,18 @@ export default function App() {
     e.preventDefault();
     try {
       if (editingPersona) {
-        const res = await fetch(`/api/v1/personas/${editingPersona.id}`, {
+        await apiFetch(`/api/v1/personas/${editingPersona.id}`, {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(personaForm),
         });
-        if (!res.ok) throw new Error('Failed to update persona');
         showToast('success', `Persona "${personaForm.name}" updated`);
       } else {
-        const res = await fetch('/api/v1/personas', {
+        await apiFetch('/api/v1/personas', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(personaForm),
         });
-        if (!res.ok) throw new Error('Failed to create persona');
         showToast('success', `Persona "${personaForm.name}" created`);
       }
       setShowPersonaModal(false);
@@ -497,11 +528,10 @@ export default function App() {
 
   const handleDuplicatePersona = async (id: string) => {
     try {
-      const res = await fetch(`/api/v1/personas/${id}/duplicate`, {
+      await apiFetch(`/api/v1/personas/${id}/duplicate`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
       });
-      if (!res.ok) throw new Error('Failed to duplicate persona');
       showToast('success', 'Persona duplicated successfully');
       fetchInitialData();
     } catch (err) {
@@ -512,15 +542,7 @@ export default function App() {
   const handleDeletePersona = async (id: string, name: string) => {
     if (!confirm(`Are you sure you want to delete persona "${name}"?`)) return;
     try {
-      const res = await fetch(`/api/v1/personas/${id}`, {
-        method: 'DELETE',
-      });
-      if (res.status === 409) {
-        const data = await res.json();
-        showToast('error', data.error || 'Cannot delete persona: in use by active agents');
-        return;
-      }
-      if (!res.ok) throw new Error('Failed to delete persona');
+      await apiFetch(`/api/v1/personas/${id}`, { method: 'DELETE' });
       showToast('success', `Persona "${name}" deleted`);
       fetchInitialData();
     } catch (err) {
@@ -559,7 +581,7 @@ export default function App() {
     e.preventDefault();
     try {
       if (editingInstance) {
-        const res = await fetch(`/api/v1/instances/${editingInstance.id}`, {
+        await apiFetch(`/api/v1/instances/${editingInstance.id}`, {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -570,15 +592,13 @@ export default function App() {
             isActive: instanceForm.isActive,
           }),
         });
-        if (!res.ok) throw new Error('Failed to update agent instance');
         showToast('success', `Agent "${instanceForm.name}" updated`);
       } else {
-        const res = await fetch('/api/v1/instances', {
+        await apiFetch('/api/v1/instances', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(instanceForm),
         });
-        if (!res.ok) throw new Error('Failed to create agent instance');
         showToast('success', `Agent "${instanceForm.name}" created`);
       }
       setShowInstanceModal(false);
@@ -591,12 +611,11 @@ export default function App() {
   const handleToggleInstanceActive = async (inst: AgentInstance) => {
     try {
       const nextActive = !inst.isActive;
-      const res = await fetch(`/api/v1/instances/${inst.id}/toggle-active`, {
+      await apiFetch(`/api/v1/instances/${inst.id}/toggle-active`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ isActive: nextActive }),
       });
-      if (!res.ok) throw new Error('Failed to toggle status');
       showToast('info', `Agent "${inst.name}" is now ${nextActive ? 'Active' : 'Disabled'}`);
       fetchInitialData();
     } catch (err) {
@@ -607,8 +626,7 @@ export default function App() {
   const handleDeleteInstance = async (id: string, name: string) => {
     if (!confirm(`Are you sure you want to delete agent instance "${name}"?`)) return;
     try {
-      const res = await fetch(`/api/v1/instances/${id}`, { method: 'DELETE' });
-      if (!res.ok) throw new Error('Failed to delete agent instance');
+      await apiFetch(`/api/v1/instances/${id}`, { method: 'DELETE' });
       showToast('success', `Agent "${name}" deleted`);
       fetchInitialData();
     } catch (err) {
@@ -620,11 +638,7 @@ export default function App() {
     if (!currentRoom) return;
     if (!confirm(`Delete room "${currentRoom.name}"? Its messages and history are removed permanently.`)) return;
     try {
-      const res = await fetch(`/api/v1/rooms/${currentRoom.id}`, { method: 'DELETE' });
-      if (!res.ok) {
-        const body = (await res.json().catch(() => null)) as { error?: string } | null;
-        throw new Error(body?.error || 'Failed to delete room');
-      }
+      await apiFetch(`/api/v1/rooms/${currentRoom.id}`, { method: 'DELETE' });
       showToast('success', `Room "${currentRoom.name}" deleted`);
       setShowRoomSettingsModal(false);
       setCurrentRoom(null);
@@ -639,13 +653,11 @@ export default function App() {
   const handleSetRoomDefaultAgent = async (instanceId: string | null) => {
     if (!currentRoom) return;
     try {
-      const res = await fetch(`/api/v1/rooms/${currentRoom.id}/default-agent`, {
+      const updated = await apiFetch<Room>(`/api/v1/rooms/${currentRoom.id}/default-agent`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ defaultAgentInstanceId: instanceId }),
       });
-      if (!res.ok) throw new Error('Failed to update default agent');
-      const updated = await res.json();
       setCurrentRoom(updated);
       showToast('success', instanceId ? 'Default agent assigned' : 'Default agent cleared');
       fetchInitialData();
@@ -659,10 +671,10 @@ export default function App() {
     const isMember = roomMembers.some((m) => m.memberId === instanceId && m.memberType === 'agent_instance');
     try {
       if (isMember) {
-        await fetch(`/api/v1/rooms/${currentRoom.id}/members/${instanceId}`, { method: 'DELETE' });
+        await apiFetch(`/api/v1/rooms/${currentRoom.id}/members/${instanceId}`, { method: 'DELETE' });
         showToast('info', 'Agent removed from room');
       } else {
-        await fetch(`/api/v1/rooms/${currentRoom.id}/members`, {
+        await apiFetch(`/api/v1/rooms/${currentRoom.id}/members`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ memberType: 'agent_instance', memberId: instanceId, role: 'participant' }),
@@ -703,7 +715,7 @@ export default function App() {
     }
     setCreatingRoom(true);
     try {
-      const res = await fetch('/api/v1/rooms', {
+      const created = await apiFetch<Room>('/api/v1/rooms', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -714,11 +726,9 @@ export default function App() {
           defaultAgentInstanceId: createRoomForm.memberInstanceIds[0] ?? null,
         }),
       });
-      if (!res.ok) throw new Error('Failed to create room');
-      const created: Room = await res.json();
 
       // Refresh room list and switch to the new room immediately (no page reload).
-      const roomsRes = await fetch('/api/v1/rooms').then((r) => r.json()).catch(() => []);
+      const roomsRes = await apiFetch('/api/v1/rooms').catch(() => []);
       setRooms(Array.isArray(roomsRes) ? roomsRes : []);
       setCurrentRoom(created);
       await loadRoomData(created.id);
@@ -740,7 +750,7 @@ export default function App() {
   const handleInspectPrompt = async () => {
     if (instances.length === 0) return;
     try {
-      const res = await fetch('/api/v1/inspect-prompt', {
+      const data = await apiFetch<InspectedPromptData>('/api/v1/inspect-prompt', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -748,7 +758,6 @@ export default function App() {
           triggerMessage: 'Design the microservice architecture and security model.',
         }),
       });
-      const data = await res.json();
       setInspectedPrompt(data);
     } catch (e) {
       console.error(e);
@@ -882,8 +891,8 @@ export default function App() {
         {/* Tab Views */}
         <div className="flex-1 overflow-y-auto p-6">
           {/* 1. DASHBOARD */}
-          {activeTab === 'control' && <AgentControlPage notify={(type, message) => setStatusNotification({ type, message })} />}
-          {activeTab === 'groups' && <GroupsPage notify={(type, message) => setStatusNotification({ type, message })} />}
+          {activeTab === 'control' && <AgentControlPage key={authEpoch} notify={(type, message) => setStatusNotification({ type, message })} />}
+          {activeTab === 'groups' && <GroupsPage key={authEpoch} notify={(type, message) => setStatusNotification({ type, message })} />}
 
           {activeTab === 'dashboard' && (
             <div className="space-y-6 max-w-6xl">
@@ -907,7 +916,7 @@ export default function App() {
                 <div className="bg-slate-900/60 border border-slate-800 p-4 rounded-xl">
                   <div className="text-xs text-slate-400 font-medium">Deterministic Routing</div>
                   <div className="text-2xl font-bold text-emerald-400 mt-1 flex items-center gap-1.5">
-                    <CheckCircle2 className="w-5 h-5" /> Active v1.0.4
+                    <CheckCircle2 className="w-5 h-5" /> Active v{WEB_APP_VERSION}
                   </div>
                 </div>
               </div>
@@ -1389,6 +1398,61 @@ export default function App() {
           )}
         </div>
       </main>
+
+      {/* MODAL: AUTH TOKEN (daemon started with --token) */}
+      {showAuthModal && (
+        <div className="fixed inset-0 bg-black/70 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="auth-modal-title"
+            className="bg-slate-900 border border-slate-800 rounded-2xl w-full max-w-md p-6 space-y-4 shadow-2xl"
+          >
+            <div className="flex items-center gap-2 border-b border-slate-800 pb-3">
+              <KeyRound className="w-5 h-5 text-cyan-400" />
+              <h3 id="auth-modal-title" className="font-bold text-base text-slate-100">Authentication Required</h3>
+            </div>
+
+            <form onSubmit={handleUnlock} className="space-y-4 text-xs">
+              <p className="text-slate-400">
+                This Web Deck was started with <code className="font-mono text-cyan-300">--token</code>. Paste the token to continue.
+              </p>
+
+              <div>
+                <label htmlFor="authToken" className="block text-slate-400 mb-1 font-semibold">Access Token</label>
+                <input
+                  id="authToken"
+                  type="password"
+                  autoFocus
+                  autoComplete="off"
+                  spellCheck={false}
+                  value={authTokenInput}
+                  onChange={(e) => setAuthTokenInput(e.target.value)}
+                  placeholder="Paste the --token secret"
+                  className="w-full bg-slate-950 border border-slate-800 rounded-lg p-2 text-slate-100 font-mono focus:outline-none focus:border-cyan-500"
+                />
+              </div>
+
+              {authError && (
+                <div className="flex items-start gap-2 text-rose-200 bg-rose-950/40 border border-rose-800/50 rounded-lg p-2.5" role="alert">
+                  <AlertTriangle className="w-3.5 h-3.5 mt-0.5 shrink-0 text-rose-400" />
+                  <span>{authError}</span>
+                </div>
+              )}
+
+              <div className="flex justify-end pt-2 border-t border-slate-800">
+                <button
+                  type="submit"
+                  disabled={!authTokenInput.trim()}
+                  className="px-4 py-2 bg-cyan-600 hover:bg-cyan-500 disabled:bg-slate-700 disabled:text-slate-500 rounded-lg text-white font-semibold"
+                >
+                  Unlock
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
 
       {/* MODAL: PERSONA CREATE / EDIT */}
       {showPersonaModal && (

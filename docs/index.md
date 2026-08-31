@@ -15,6 +15,7 @@ Welcome to the **AgentDeck** documentation. AgentDeck is a unified agent managem
    - Domain entity hierarchy
    - Capability negotiation protocol
    - SQLite WAL data layer & non-destructive overlays
+   - LLM routing, secret store, agent interop (MCP) & REST endpoints
 3. [Multi-Agent Group Chat Modes](group-chat-modes.md)
    - Mention Mode (`@Agent`, `@all`)
    - Broadcast / Panel Mode
@@ -31,7 +32,7 @@ Welcome to the **AgentDeck** documentation. AgentDeck is a unified agent managem
    - Localhost binding & LAN authentication
    - Non-destructive configuration isolation
 7. [Help & FAQ](help-faq.md)
-   - CLI command reference
+   - CLI command reference (incl. `agentdeck agents …` and `agentdeck mcp-server`)
    - Common troubleshooting steps
 
 ---
@@ -45,7 +46,12 @@ Welcome to the **AgentDeck** documentation. AgentDeck is a unified agent managem
 | `agentdeck tui` | Launch the full-screen terminal user interface (TUI) |
 | `agentdeck web` | Start the local REST/WebSocket daemon and open the Web Deck |
 | `agentdeck upgrade <agent>` | Safely upgrade an agent with automated pre-upgrade configuration backups |
-| `agentdeck doctor [agent]` | Run diagnostic Level 1 & Level 2 health checks across all agents, or a single one |
+| `agentdeck doctor [agent]` | Run diagnostic Level 1–3 health checks across all agents, or a single one |
+| `agentdeck agents setup` | Install/update the managed agents and point them all at one provider + model (plain `agentdeck agents` does the same) |
+| `agentdeck agents status` | Show what is installed and where each agent currently points |
+| `agentdeck agents rollback --run <id>` | Restore the agent configs backed up before a routing apply |
+| `agentdeck agents link` | Register AgentDeck's MCP server in each agent so they can call each other |
+| `agentdeck mcp-server` | Expose this deck as an MCP server over stdio (agent-to-agent calls) |
 | `agentdeck chat <room>` | Start an interactive CLI chat session in a room |
 | `agentdeck rooms list\|delete` | List rooms with limits, or delete one (messages cascade) |
 | `agentdeck plugin install <src>` | Install a plugin from a local path or pinned `github:owner/repo#ref` |

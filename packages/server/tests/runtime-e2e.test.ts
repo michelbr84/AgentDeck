@@ -194,7 +194,7 @@ describe('AgentDeck Full Runtime & E2E Acceptance Suite', () => {
       memberInstanceIds: [inst.id],
     });
 
-    const wsUrl = `ws://127.0.0.1:${TEST_PORT}/ws`;
+    const wsUrl = `ws://127.0.0.1:${TEST_PORT}/ws?token=${TEST_TOKEN}`;
     const receivedEvents: Array<{ type: string; payload: Record<string, unknown>; roomId?: string }> = [];
 
     const ws = new WebSocket(wsUrl);
@@ -241,6 +241,7 @@ describe('AgentDeck Full Runtime & E2E Acceptance Suite', () => {
     expect(String(chunk.payload.text).length).toBeGreaterThan(0);
     // Envelope metadata now carries the room, enabling client-side filtering.
     expect(chunk.roomId).toBe(room.id);
+
 
     ws.close();
   });
@@ -312,7 +313,7 @@ describe('AgentDeck Full Runtime & E2E Acceptance Suite', () => {
       memberInstanceIds: [inst.id],
     });
 
-    const wsUrl = `ws://127.0.0.1:${TEST_PORT}/ws`;
+    const wsUrl = `ws://127.0.0.1:${TEST_PORT}/ws?token=${TEST_TOKEN}`;
     const receivedEvents: Array<{ type: string }> = [];
     const ws = new WebSocket(wsUrl);
     await new Promise<void>((resolve, reject) => {
@@ -391,7 +392,7 @@ describe('AgentDeck Full Runtime & E2E Acceptance Suite', () => {
     const roomB = await makeRoom('scoped-b');
 
     const received: Array<{ type: string; roomId?: string }> = [];
-    const ws = new WebSocket(`ws://127.0.0.1:${TEST_PORT}/ws`);
+    const ws = new WebSocket(`ws://127.0.0.1:${TEST_PORT}/ws?token=${TEST_TOKEN}`);
     await new Promise<void>((resolve, reject) => {
       ws.on('open', () => {
         ws.send(JSON.stringify({ type: 'subscribe', roomId: roomA.id }));

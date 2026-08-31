@@ -169,7 +169,7 @@ export class ClineAdapter implements AgentAdapter {
       };
     }
     try {
-      const res = await executeSafeCommand({ command: 'npm', args: ['view', 'cline-cli', 'version'] });
+      const res = await executeSafeCommand({ command: 'npm', args: ['view', 'cline', 'version'] });
       return {
         latestVersion: res.stdout.trim() || '3.5.0',
         releaseNotes: 'Cline CLI release',
@@ -270,10 +270,10 @@ export class ClineAdapter implements AgentAdapter {
   }
 
   public async install(options?: { onProgress?: (stage: string, percent?: number) => void }): Promise<void> {
-    options?.onProgress?.('Installing cline-cli...', 25);
+    options?.onProgress?.('Installing cline...', 25);
     await executeSafeCommand({
       command: 'npm',
-      args: ['install', '-g', 'cline-cli'],
+      args: ['install', '-g', 'cline'],
       timeoutMs: 180000,
     });
     options?.onProgress?.('Cline installed', 100);
@@ -281,13 +281,13 @@ export class ClineAdapter implements AgentAdapter {
 
   public async upgrade(options?: UpgradeOptions): Promise<void> {
     if (options?.dryRun) {
-      options?.onProgress?.('Dry run: npm install -g cline-cli@latest', 100);
+      options?.onProgress?.('Dry run: npm install -g cline@latest', 100);
       return;
     }
     options?.onProgress?.('Upgrading Cline...', 40);
     await executeSafeCommand({
       command: 'npm',
-      args: ['install', '-g', 'cline-cli@latest'],
+      args: ['install', '-g', 'cline@latest'],
       timeoutMs: 180000,
     });
     options?.onProgress?.('Cline upgrade completed', 100);
@@ -303,10 +303,8 @@ export class ClineAdapter implements AgentAdapter {
   }
 
   public async execute(context: ExecutionContext): Promise<ExecutionResult> {
-    const binPath = await this.findBinary();
-    const promptText = context.promptTree.finalRawPrompt;
-
-    if (!binPath) {
+    if (process.env.AGENTDECK_MOCK_EXECUTION === 'true' || process.env.NODE_ENV === 'test') {
+      const promptText = context.promptTree.finalRawPrompt;
       const mockResponse = `[Cline Developer] Workspace inspected. Tasks executed for prompt: "${promptText.slice(0, 80)}..."`;
       context.onChunk?.(mockResponse);
       return {
@@ -322,6 +320,13 @@ export class ClineAdapter implements AgentAdapter {
         },
         costUSD: { source: 'estimated', value: 0.002 },
       };
+    }
+
+    const binPath = await this.findBinary();
+    const promptText = context.promptTree.finalRawPrompt;
+
+    if (!binPath) {
+      throw new Error('Cline binary (cline) not found. Install it or deactivate this instance.');
     }
 
     let fullStdout = '';

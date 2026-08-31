@@ -1,4 +1,5 @@
 import { useEffect, useRef } from 'react';
+import { tokenStore } from '../api';
 
 export interface StreamEnvelope {
   id?: string;
@@ -34,7 +35,10 @@ export function useEventStream(
 
     const connect = () => {
       const protocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
-      const ws = new WebSocket(`${protocol}://${window.location.host}/ws`);
+      // Browsers cannot set WS headers, so a --token daemon accepts ?token=.
+      const token = tokenStore.get();
+      const query = token ? `?token=${encodeURIComponent(token)}` : '';
+      const ws = new WebSocket(`${protocol}://${window.location.host}/ws${query}`);
       wsRef.current = ws;
 
       ws.onopen = () => {

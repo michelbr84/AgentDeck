@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { AgentDeckManager, MultiAgentOrchestrationEngine } from '../src/index.js';
 import { AgentDeckDatabase } from '@agentdeck/database';
+import type { ExecutionContext, ExecutionResult } from '@agentdeck/adapter-sdk';
 
 describe('@agentdeck/core MultiAgentOrchestrationEngine', () => {
   it('should execute Mention mode and only invoke mentioned agents', async () => {
@@ -271,6 +272,85 @@ Questions:
     expect(result.turnsExecuted).toBe(1);
     expect(result.messages.length).toBe(2);
 
+    db.close();
+  });
+
+  it('should abort adapter execution when maxRuntimeSec is exceeded mid-turn', async () => {
+    const db = new AgentDeckDatabase({ dbPath: ':memory:', inMemory: true });
+    await db.migrate();
+    const manager = AgentDeckManager.createWithDatabase(db);
+    const engine = new MultiAgentOrchestrationEngine(manager);
+
+    const installations = await manager.scanAndSyncInstallations();
+    const mockInst = installations[0]!;
+
+    const persona = await manager.createPersona({
+      name: 'SlowAgent',
+      role: 'Tester',
+      language: 'en-US',
+      systemPromptOverlay: 'Be slow',
+      avatarEmoji: '🐌',
+      isTemplate: false,
+    });
+
+    const inst = await manager.createAgentInstance({
+      installationId: mockInst.id,
+      personaId: persona.id,
+      name: 'SlowInst',
+    });
+
+    // Replace adapter with one that sleeps for 5 seconds, respecting abortSignal
+    const adapter = manager.getAdapter(mockInst.definitionId)!;
+    const origExecute = adapter.execute.bind(adapter);
+    let abortWasReceived = false;
+    adapter.execute = async (ctx: ExecutionContext): Promise<ExecutionResult> => {
+      return new Promise((resolve, reject) => {
+        const timer = setTimeout(() => {
+          resolve({
+            content: 'I completed after 5 seconds',
+            exitCode: 0,
+            transport: 'mock',
+            tokensUsed: { input: { source: 'estimated', value: 10 }, output: { source: 'estimated', value: 10 }, total: { source: 'estimated', value: 20 } },
+            costUSD: { source: 'estimated', value: 0.001 },
+          });
+        }, 5000);
+
+        ctx.abortSignal.addEventListener('abort', () => {
+          abortWasReceived = true;
+          clearTimeout(timer);
+          reject(new Error('Subprocess "slow-agent" was aborted or timed out'));
+        });
+      });
+    };
+
+    const user = await manager.createOrGetLocalProfile('Michel', '👨‍💻');
+    // Create room with 1-second runtime limit
+    const room = await manager.createRoom({
+      name: 'runtime-cap-room',
+      mode: 'mention',
+      maxRuntimeSec: 1,
+      memberInstanceIds: [inst.id],
+      memberUserIds: [user.id],
+    });
+
+    const startTime = Date.now();
+    const result = await engine.executeRun({
+      roomId: room.id,
+      triggerMessage: '@SlowInst do something slow',
+      senderUserId: user.id,
+      senderDisplayName: 'Michel',
+    });
+    const elapsed = Date.now() - startTime;
+
+    // The adapter should have been aborted via the runtime budget timer
+    expect(abortWasReceived).toBe(true);
+    // The run should have completed (not hung for 5 seconds)
+    expect(elapsed).toBeLessThan(4000);
+    // Should have 1 user message + 1 fallback error message
+    expect(result.messages.length).toBe(2);
+    expect(result.messages[1]!.content).toContain('⚠️ Agent execution failed');
+
+    adapter.execute = origExecute;
     db.close();
   });
 });

@@ -33,6 +33,7 @@ describe('@agentdeck/database initialization & migrations', () => {
         version_state: 'current',
         runtime_state: 'stopped',
         last_checked_at: new Date().toISOString(),
+        metadata_json: '{}',
       })
       .execute();
 
@@ -57,6 +58,7 @@ describe('@agentdeck/database initialization & migrations', () => {
         persona_id: 'pers-atlas',
         name: 'Atlas Claude',
         permission_tier: 'developer',
+        is_active: 1,
       })
       .execute();
 
@@ -81,6 +83,7 @@ describe('@agentdeck/database initialization & migrations', () => {
         version_state: 'current',
         runtime_state: 'stopped',
         last_checked_at: new Date().toISOString(),
+        metadata_json: '{}',
       })
       .execute();
 
@@ -107,6 +110,7 @@ describe('@agentdeck/database initialization & migrations', () => {
         persona_id: 'pers-test-cascade',
         name: 'Cascade Agent',
         permission_tier: 'developer',
+        is_active: 1,
       })
       .execute();
 

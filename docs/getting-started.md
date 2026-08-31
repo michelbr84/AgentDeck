@@ -45,6 +45,20 @@ The wizard will:
 
 ---
 
+## Provision Agents & LLM Routing
+
+`agentdeck setup` configures personas and instances. `agentdeck agents setup` is the other half: it installs or updates the managed agents (Claude Code, Hermes, OpenClaw, GarraIA) and points all of them at one provider + model pair, with an optional backup.
+
+```bash
+agentdeck agents setup     # interactive; plain `agentdeck agents` does the same
+agentdeck agents status    # where each agent currently points
+agentdeck agents link      # let the agents call each other over MCP
+```
+
+The wizard asks for the primary and backup provider (OpenRouter and local Ollama by default), the model on each side, and the API key when one is needed — keys are stored under `~/.agentdeck/secrets/` (mode `0600`), never in the database. Each apply backs up the agents' native configs first; `agentdeck agents rollback --run <id>` restores them. The same controls are available in the Web Deck under **Agent Control**, and rooms can be built as agent groups under **Groups**. See the [Help & FAQ](help-faq.md) for every flag.
+
+---
+
 ## Launching the User Interfaces
 
 ### Terminal User Interface (TUI)

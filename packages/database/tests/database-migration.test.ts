@@ -36,8 +36,12 @@ describe('AgentDeck Database Real Migration & Integrity Suite', () => {
 describe('003_llm_routing', () => {
   it('adds the routing table and the per-instance override column', async () => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'agentdeck-mig-v3-'));
-    const db = new AgentDeckDatabase(path.join(dir, 'test.db'));
+    const dbPath = path.join(dir, 'test.db');
+    const db = new AgentDeckDatabase({ dbPath });
     await db.migrate();
+    // Prove the on-disk path is exercised (a bare string argument used to open an
+    // anonymous in-memory database and the test passed without touching it).
+    await expect(fs.stat(dbPath)).resolves.toBeDefined();
 
     // Singleton row round-trips.
     await db.db

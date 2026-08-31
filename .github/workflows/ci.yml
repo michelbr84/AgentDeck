@@ -46,11 +46,11 @@ jobs:
       - name: Build packages
         run: pnpm build
 
-      - name: Typecheck
-        run: pnpm typecheck
-
       - name: Lint
         run: pnpm lint
+
+      - name: Typecheck
+        run: pnpm typecheck
 
       - name: Run Tests
         run: pnpm test

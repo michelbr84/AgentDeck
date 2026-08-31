@@ -145,6 +145,9 @@ export async function runAgentsSetup(options: AgentsSetupOptions = {}): Promise<
       const s = ora(`Instalando ${adapter.definition.name}...`).start();
       try {
         await adapter.install({ onProgress: (stage, pct) => (s.text = `${stage} (${pct ?? 0}%)`) });
+        // A fresh install must not inherit a latest-version answer cached
+        // before it existed; the next scan looks it up again.
+        AgentDeckManager.invalidateVersionCache(adapter.definition.id);
         s.succeed(`${adapter.definition.name} instalado.`);
       } catch (err) {
         s.fail(`Falha ao instalar ${adapter.definition.name}: ${(err as Error).message}`);

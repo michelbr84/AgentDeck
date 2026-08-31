@@ -1,21 +1,19 @@
 import { describe, it, expect } from 'vitest';
-import { TUI_VIEWS, type TuiView } from '../../apps/cli/src/tui/index.js';
+import {
+  TUI_VIEWS,
+  getNextView,
+  resolveViewForKey,
+  type TuiView,
+} from '../../apps/cli/src/tui/navigation.js';
 
-describe('TUI Portable Key Navigation & Focus Contract', () => {
-  it('should define stable navigation views and ordered sequence including personas and instances', () => {
-    expect(TUI_VIEWS).toEqual(['dashboard', 'agents', 'personas', 'instances', 'rooms', 'chat', 'docs']);
+describe('TUI Navigation Module', () => {
+  it('should define stable navigation views in correct order', () => {
+    expect(TUI_VIEWS).toEqual([
+      'dashboard', 'agents', 'personas', 'instances', 'rooms', 'chat', 'docs',
+    ]);
   });
 
-  it('should calculate correct next and previous views for Tab and Shift+Tab navigation', () => {
-    const getNextView = (current: TuiView, isShift: boolean): TuiView => {
-      const idx = TUI_VIEWS.indexOf(current);
-      const nextIdx = isShift
-        ? (idx - 1 + TUI_VIEWS.length) % TUI_VIEWS.length
-        : (idx + 1) % TUI_VIEWS.length;
-      return TUI_VIEWS[nextIdx] || 'dashboard';
-    };
-
-    // Forward Tab
+  it('should cycle forward through all views with getNextView (isShift=false)', () => {
     expect(getNextView('dashboard', false)).toBe('agents');
     expect(getNextView('agents', false)).toBe('personas');
     expect(getNextView('personas', false)).toBe('instances');
@@ -23,8 +21,9 @@ describe('TUI Portable Key Navigation & Focus Contract', () => {
     expect(getNextView('rooms', false)).toBe('chat');
     expect(getNextView('chat', false)).toBe('docs');
     expect(getNextView('docs', false)).toBe('dashboard');
+  });
 
-    // Backward Shift+Tab
+  it('should cycle backward through all views with getNextView (isShift=true)', () => {
     expect(getNextView('dashboard', true)).toBe('docs');
     expect(getNextView('docs', true)).toBe('chat');
     expect(getNextView('chat', true)).toBe('rooms');
@@ -34,19 +33,19 @@ describe('TUI Portable Key Navigation & Focus Contract', () => {
     expect(getNextView('agents', true)).toBe('dashboard');
   });
 
-  it('should map numeric keys 1..7 directly to appropriate views', () => {
-    const numMap: Record<string, TuiView> = {
-      '1': 'dashboard',
-      '2': 'agents',
-      '3': 'personas',
-      '4': 'instances',
-      '5': 'rooms',
-      '6': 'chat',
-      '7': 'docs',
-    };
-
+  it('should map numeric keys 1..7 to views via resolveViewForKey', () => {
+    const expected: TuiView[] = [
+      'dashboard', 'agents', 'personas', 'instances', 'rooms', 'chat', 'docs',
+    ];
     for (let i = 1; i <= 7; i++) {
-      expect(numMap[String(i)]).toBe(TUI_VIEWS[i - 1]);
+      expect(resolveViewForKey(String(i))).toBe(expected[i - 1]);
     }
+  });
+
+  it('should return null for non-numeric or out-of-range keys', () => {
+    expect(resolveViewForKey('0')).toBeNull();
+    expect(resolveViewForKey('8')).toBeNull();
+    expect(resolveViewForKey('a')).toBeNull();
+    expect(resolveViewForKey('')).toBeNull();
   });
 });

@@ -29,6 +29,28 @@ export interface ServerOptions {
   webRoot?: string;
 }
 
+// A literal loopback host. Nothing here is attacker-controllable through DNS,
+// which is the whole point of checking it: DNS rebinding delivers the attacker's
+// hostname in `Host`, a cross-site fetch or WebSocket upgrade a foreign `Origin`.
+const OCTET = String.raw`(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)`;
+const LOOPBACK = String.raw`(?:localhost\.?|127(?:\.${OCTET}){3}|\[::1\])`;
+const LOCAL_HOST_RE = new RegExp(`^${LOOPBACK}(?::\\d{1,5})?$`, 'i');
+const LOCAL_ORIGIN_RE = new RegExp(`^https?://${LOOPBACK}(?::\\d{1,5})?$`, 'i');
+
+/** True for `localhost`, `127.x.x.x`, `[::1]` / `::1`, with or without a port. */
+export function isLoopbackHost(host: string): boolean {
+  return host === '::1' || LOCAL_HOST_RE.test(host);
+}
+
+/** What the no-token local guard covers: REST, the event WebSocket, and /health (it reveals webRoot). */
+function isLocalGuardedUrl(url: string): boolean {
+  // Fastify routes on the path alone, so compare the path alone: `/health?x`
+  // must not slip past a guard that stops `/health`.
+  const q = url.indexOf('?');
+  const pathname = q === -1 ? url : url.slice(0, q);
+  return pathname.startsWith('/api/') || pathname === '/ws' || pathname === '/health';
+}
+
 export function resolveWebRoot(customWebRoot?: string): string | null {
   // 1. Explicit user override
   if (customWebRoot) {
@@ -85,11 +107,42 @@ export async function createAgentDeckServer(options?: ServerOptions): Promise<Ag
   const chatService = new ChatService(manager);
   const authToken = options?.authToken;
 
+  // Validate: allowLan requires authToken
+  if (options?.allowLan && !authToken) {
+    throw new Error('--lan requires --token for authentication. Refusing to start without auth on LAN.');
+  }
+  // Same rule for an explicit non-loopback host: it is LAN exposure by another name
+  if (options?.host && !isLoopbackHost(options.host) && !authToken) {
+    throw new Error(`--host ${options.host} is not a loopback address; it requires --token for authentication.`);
+  }
+
+  // 0. Local request guard (no-token mode). No token implies a loopback bind
+  // (allowLan requires one, above), but a browser can still be tricked into
+  // talking to us: DNS rebinding sends the attacker's hostname in `Host`, and a
+  // cross-site fetch or WebSocket upgrade carries a foreign `Origin`. Both must
+  // therefore be loopback literals. Local CLIs, curl and the Node `ws` client
+  // send a loopback Host and no Origin, so they pass. Registered before
+  // @fastify/cors so the answer is a deliberate 403 rather than the 500 the
+  // cors callback produces for a rejected origin.
+  if (!authToken) {
+    server.addHook('onRequest', async (req, reply) => {
+      if (!isLocalGuardedUrl(req.url)) return;
+      const host = req.headers.host;
+      if (host && !LOCAL_HOST_RE.test(host)) {
+        return reply.status(403).send({ error: 'Forbidden: non-local Host header' });
+      }
+      const origin = req.headers.origin;
+      if (origin && !LOCAL_ORIGIN_RE.test(origin)) {
+        return reply.status(403).send({ error: 'Forbidden: cross-site request' });
+      }
+    });
+  }
+
   // 1. CORS
   await server.register(cors, {
     origin: (origin, cb) => {
-      // Allow localhost and local IP origins
-      if (!origin || origin.startsWith('http://localhost') || origin.startsWith('http://127.0.0.1')) {
+      // Same loopback set as the local guard (anchored, so http://localhost.evil.com is out)
+      if (!origin || LOCAL_ORIGIN_RE.test(origin)) {
         return cb(null, true);
       }
       if (options?.allowLan) {
@@ -176,12 +229,24 @@ export async function createAgentDeckServer(options?: ServerOptions): Promise<Ag
   // Token authentication hook if token is set
   if (authToken) {
     server.addHook('onRequest', async (req, reply) => {
-      if (req.url.startsWith('/api/v1')) {
+      const isApi = req.url.startsWith('/api/');
+      const isWs = req.url === '/ws' || req.url.startsWith('/ws?');
+      if (isApi || isWs) {
+        // Check Bearer header first
         const headerAuth = req.headers['authorization'];
         const token = headerAuth?.replace(/^Bearer\s+/i, '');
-        if (!token || !timingSafeEqual(token, authToken)) {
-          return reply.status(401).send({ error: 'Unauthorized: Invalid or missing authentication token' });
+        if (token && timingSafeEqual(token, authToken)) {
+          return; // authorized via header
         }
+        // For WebSocket: also accept ?token= query param (browsers can't set WS headers)
+        if (isWs) {
+          const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
+          const queryToken = url.searchParams.get('token');
+          if (queryToken && timingSafeEqual(queryToken, authToken)) {
+            return; // authorized via query
+          }
+        }
+        return reply.status(401).send({ error: 'Unauthorized: Invalid or missing authentication token' });
       }
     });
   }
@@ -238,6 +303,9 @@ export async function createAgentDeckServer(options?: ServerOptions): Promise<Ag
     const adapter = manager.getAdapter(id);
     if (!adapter) throw new Error(`Agent ${id} not found`);
     await adapter.install();
+    // What is installed just changed: make the next scan look the latest
+    // version up again instead of serving an answer cached up to an hour ago.
+    AgentDeckManager.invalidateVersionCache(adapter.definition.id);
     const detection = await adapter.detect();
     return redactSecrets({ ok: true, detection });
   });
@@ -642,6 +710,7 @@ export async function createAgentDeckServer(options?: ServerOptions): Promise<Ag
   server.post('/api/v1/rooms/:id/messages', async (req) => {
     const { id } = req.params as { id: string };
     const body = req.body as { senderType?: 'user' | 'agent_instance'; senderId?: string; senderDisplayName?: string; content: string };
+    // Badge-spoof guard: never forward client-supplied rawPayload
     const msg = await manager.postMessage({
       roomId: id,
       senderType: body.senderType || 'user',
@@ -728,6 +797,22 @@ export async function createAgentDeckServer(options?: ServerOptions): Promise<Ag
   server.get('/api/v1/plugins', async () => {
     const plugins = await manager.listPlugins();
     return redactSecrets(plugins.map((p) => p.definition));
+  });
+
+  // Orchestration runs
+  server.get('/api/v1/runs', async (req) => {
+    const { roomId } = req.query as { roomId?: string };
+    return manager.listRuns(roomId);
+  });
+
+  // Audit logs
+  server.get('/api/v1/audit-logs', async () => {
+    return manager.listAuditLogs();
+  });
+
+  // Backups
+  server.get('/api/v1/backups', async () => {
+    return manager.listBackups();
   });
 
   // ==========================================

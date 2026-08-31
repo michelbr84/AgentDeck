@@ -27,8 +27,20 @@ export interface UpgradeResult {
   error?: string;
 }
 
+export interface UpgradeEngineHooks {
+  /**
+   * Fired as soon as `adapter.upgrade()` has returned, i.e. once what is
+   * installed may differ from what was last scanned. The manager uses it to
+   * drop its cached latest-version lookup so the next scan reflects the change.
+   */
+  onInstallationChanged?: (definitionId: string) => void;
+}
+
 export class TransactionalUpgradeEngine {
-  constructor(private eventBus?: EventBus) {}
+  constructor(
+    private eventBus?: EventBus,
+    private hooks?: UpgradeEngineHooks
+  ) {}
 
   /**
    * Constructs an upgrade plan without performing any mutations (safe for dry-runs).
@@ -37,6 +49,12 @@ export class TransactionalUpgradeEngine {
     const detection = await adapter.detect();
     const latestInfo = await adapter.getLatestVersion();
     const resolvedTarget = targetVersion || latestInfo.latestVersion;
+    if (!resolvedTarget) {
+      throw new Error(
+        `Cannot determine latest version for ${adapter.definition.id}. ` +
+        'Check your network connection or specify a target version explicitly.'
+      );
+    }
     const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
     const backupPath = path.join(os.homedir(), '.agentdeck', 'backups', adapter.definition.id, timestamp);
 
@@ -105,10 +123,15 @@ export class TransactionalUpgradeEngine {
 
       // Step 2: Execute Upgrade
       options?.onProgress?.('Applying upgrade package...', 40);
-      await adapter.upgrade({
-        targetVersion: plan.targetVersion,
-        onProgress: (stage, pct) => options?.onProgress?.(stage, pct),
-      });
+      try {
+        await adapter.upgrade({
+          targetVersion: plan.targetVersion,
+          onProgress: (stage, pct) => options?.onProgress?.(stage, pct),
+        });
+      } finally {
+        // What is installed may have changed even if the upgrade threw midway.
+        this.hooks?.onInstallationChanged?.(adapter.definition.id);
+      }
 
       // Step 3: Health Verification
       options?.onProgress?.('Verifying installation health...', 80);

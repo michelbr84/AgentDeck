@@ -12,7 +12,7 @@ import { runAgentsLink } from './agents/link.js';
 import { AgentDeckManager, ChatService, PluginLoader, readPluginManifest, loadProgrammaticPlugin, installPlugin, removePlugin, INSTALL_RECEIPT_FILENAME } from '@agentdeck/core';
 import { AGENTDECK_PATHS } from '@agentdeck/shared';
 import { HealthCheckLevelSchema, type RoomMode } from '@agentdeck/protocol';
-import { createAgentDeckServer } from '@agentdeck/server';
+import { createAgentDeckServer, isLoopbackHost } from '@agentdeck/server';
 import { AGENTDECK_VERSION } from '@agentdeck/shared';
 
 const program = new Command();
@@ -271,11 +271,25 @@ program
   .alias('start')
   .description('Start the local Fastify REST/WebSocket server and serve Web Deck')
   .option('-p, --port <number>', 'Server port', '4321')
-  .option('--host <host>', 'Host to bind to', '127.0.0.1')
+  .option('--host <host>', 'Host to bind to (loopback unless --token is given)', '127.0.0.1')
   .option('--lan', 'Allow local area network connections (0.0.0.0)')
   .option('--token <secret>', 'Mandatory authentication token for API and WebSocket')
   .option('--web-root <path>', 'Custom directory containing Web Deck static production build')
   .action(async (options) => {
+    // Pre-validate: --lan requires --token
+    if (options.lan && !options.token) {
+      console.error(chalk.red('\n✖ --lan requires --token for authentication.'));
+      console.error(chalk.yellow('  Usage: agentdeck web --lan --token <secret>\n'));
+      process.exit(1);
+    }
+
+    // Pre-validate: a non-loopback --host is LAN exposure by another name
+    if (!options.lan && options.host && !isLoopbackHost(options.host) && !options.token) {
+      console.error(chalk.red(`\n✖ --host ${options.host} is not a loopback address; it requires --token for authentication.`));
+      console.error(chalk.yellow(`  Usage: agentdeck web --host ${options.host} --token <secret>\n`));
+      process.exit(1);
+    }
+
     const port = parseInt(options.port, 10) || 4321;
     const server = await createAgentDeckServer({
       port,
@@ -291,15 +305,19 @@ program
       process.exit(1);
     }
 
-    const bindHost = options.lan ? '0.0.0.0' : options.host || '127.0.0.1';
+    // Node binds bare IPv6 literals (`::1`), URLs need them bracketed (`[::1]`).
+    const rawHost = options.lan ? '0.0.0.0' : options.host || '127.0.0.1';
+    const bindHost = rawHost.replace(/^\[(.*)\]$/, '$1');
+    const urlHost = bindHost.includes(':') ? `[${bindHost}]` : bindHost;
     await server.listen({ port, host: bindHost });
-    console.log(chalk.bold.green(`\n🚀 AgentDeck Web Deck running at http://${bindHost}:${port}`));
+    console.log(chalk.bold.green(`\n🚀 AgentDeck Web Deck running at http://${urlHost}:${port}`));
     console.log(chalk.cyan(`  📂 Web root: ${server.webRoot}`));
     console.log(chalk.green('  ✓ Web UI: ready'));
     console.log(chalk.green('  ✓ REST API: ready'));
     console.log(chalk.green('  ✓ WebSocket: ready'));
     if (options.token) {
-      console.log(chalk.yellow(`🔒 Authentication token required: ${options.token}`));
+      console.log(chalk.green('  🔒 Authentication: enabled (token required)'));
+      console.log(chalk.gray('     Web Deck: paste the token when prompted, or open the URL once with #token=<secret>'));
     }
   });
 

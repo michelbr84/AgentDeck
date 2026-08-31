@@ -5,15 +5,15 @@ import { AgentDeckManager, ChatService, RunAbortError } from '@agentdeck/core';
 import { formatMessageLines, sliceViewport, maxScrollOffset } from './chat-viewport.js';
 import { AgentInstallation, AgentInstance, Room, Message, Persona } from '@agentdeck/protocol';
 import { AGENTDECK_VERSION } from '@agentdeck/shared';
+import { getNextView, resolveViewForKey, type TuiView } from './navigation.js';
 
-export type TuiView = 'dashboard' | 'agents' | 'personas' | 'instances' | 'rooms' | 'chat' | 'docs';
+export type { TuiView } from './navigation.js';
+export { TUI_VIEWS } from './navigation.js';
 
 export interface TuiOptions {
   initialView?: TuiView;
   initialRoom?: string;
 }
-
-export const TUI_VIEWS: TuiView[] = ['dashboard', 'agents', 'personas', 'instances', 'rooms', 'chat', 'docs'];
 
 export const TuiApp: React.FC<TuiOptions> = ({ initialView = 'dashboard', initialRoom }) => {
   const { exit } = useApp();
@@ -183,26 +183,15 @@ export const TuiApp: React.FC<TuiOptions> = ({ initialView = 'dashboard', initia
       }
 
       // Portable Numeric Navigation: 1..7
-      if (input === '1') setView('dashboard');
-      if (input === '2') setView('agents');
-      if (input === '3') setView('personas');
-      if (input === '4') setView('instances');
-      if (input === '5') setView('rooms');
-      if (input === '6') setView('chat');
-      if (input === '7') setView('docs');
+      const resolvedView = resolveViewForKey(input);
+      if (resolvedView) {
+        setView(resolvedView);
+        return;
+      }
 
       // Tab / Shift+Tab or Left/Right Arrow Navigation across views
-      if (key.tab || key.rightArrow) {
-        const currentIndex = TUI_VIEWS.indexOf(view);
-        const nextIndex = key.shift
-          ? (currentIndex - 1 + TUI_VIEWS.length) % TUI_VIEWS.length
-          : (currentIndex + 1) % TUI_VIEWS.length;
-        setView(TUI_VIEWS[nextIndex] || 'dashboard');
-        return;
-      } else if (key.leftArrow) {
-        const currentIndex = TUI_VIEWS.indexOf(view);
-        const prevIndex = (currentIndex - 1 + TUI_VIEWS.length) % TUI_VIEWS.length;
-        setView(TUI_VIEWS[prevIndex] || 'dashboard');
+      if (key.tab || key.rightArrow || key.leftArrow) {
+        setView(getNextView(view, key.shift || key.leftArrow));
         return;
       }
 

@@ -19,8 +19,10 @@ describe('RoutingService', () => {
 
   beforeEach(async () => {
     tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'agentdeck-routing-'));
-    db = new AgentDeckDatabase(path.join(tmp, 'test.db'));
+    const dbPath = path.join(tmp, 'test.db');
+    db = new AgentDeckDatabase({ dbPath });
     await db.migrate();
+    await fs.stat(dbPath); // the real file, not an anonymous in-memory database
     service = new RoutingService(db, path.join(tmp, 'secrets'));
   });
 

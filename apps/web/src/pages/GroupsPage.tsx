@@ -7,6 +7,7 @@
  */
 import { useCallback, useEffect, useState } from 'react';
 import { Loader2, Plus, Trash2, Users } from 'lucide-react';
+import { apiFetch } from '../api';
 
 type RoomMode = 'mention' | 'panel' | 'debate' | 'round_robin' | 'coordinator';
 
@@ -58,18 +59,17 @@ export function GroupsPage({ notify }: { notify: Notify }) {
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const [roomsRes, instancesRes] = await Promise.all([
-        fetch('/api/v1/rooms'),
-        fetch('/api/v1/instances'),
+      const [roomList, instanceList] = await Promise.all([
+        apiFetch<Room[]>('/api/v1/rooms'),
+        apiFetch<AgentInstance[]>('/api/v1/instances'),
       ]);
-      const roomList = (await roomsRes.json()) as Room[];
       setRooms(roomList);
-      setInstances((await instancesRes.json()) as AgentInstance[]);
+      setInstances(instanceList);
 
       const entries = await Promise.all(
         roomList.map(async (r) => {
-          const res = await fetch(`/api/v1/rooms/${r.id}/members`);
-          return [r.id, (await res.json()) as RoomMember[]] as const;
+          const members = await apiFetch<RoomMember[]>(`/api/v1/rooms/${r.id}/members`);
+          return [r.id, members] as const;
         })
       );
       setMembersByRoom(Object.fromEntries(entries));
@@ -88,12 +88,11 @@ export function GroupsPage({ notify }: { notify: Notify }) {
     if (!newName.trim()) return;
     setBusy('create');
     try {
-      const res = await fetch('/api/v1/rooms', {
+      await apiFetch('/api/v1/rooms', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ name: newName.trim(), mode: newMode }),
       });
-      if (!res.ok) throw new Error(await res.text());
       setNewName('');
       notify('success', `Group "${newName.trim()}" created.`);
       await load();
@@ -107,14 +106,15 @@ export function GroupsPage({ notify }: { notify: Notify }) {
   const toggleMember = async (roomId: string, instanceId: string, isMember: boolean) => {
     setBusy(`${roomId}-${instanceId}`);
     try {
-      const res = isMember
-        ? await fetch(`/api/v1/rooms/${roomId}/members/${instanceId}`, { method: 'DELETE' })
-        : await fetch(`/api/v1/rooms/${roomId}/members`, {
-            method: 'POST',
-            headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({ memberType: 'agent_instance', memberId: instanceId, role: 'participant' }),
-          });
-      if (!res.ok) throw new Error(await res.text());
+      if (isMember) {
+        await apiFetch(`/api/v1/rooms/${roomId}/members/${instanceId}`, { method: 'DELETE' });
+      } else {
+        await apiFetch(`/api/v1/rooms/${roomId}/members`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ memberType: 'agent_instance', memberId: instanceId, role: 'participant' }),
+        });
+      }
       await load();
     } catch (err) {
       notify('error', `Could not update membership: ${(err as Error).message}`);
@@ -126,12 +126,11 @@ export function GroupsPage({ notify }: { notify: Notify }) {
   const setMode = async (room: Room, mode: RoomMode) => {
     setBusy(`mode-${room.id}`);
     try {
-      const res = await fetch(`/api/v1/rooms/${room.id}`, {
+      await apiFetch(`/api/v1/rooms/${room.id}`, {
         method: 'PUT',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ ...room, mode }),
       });
-      if (!res.ok) throw new Error(await res.text());
       await load();
     } catch (err) {
       notify('error', `Could not change the mode: ${(err as Error).message}`);
@@ -143,12 +142,12 @@ export function GroupsPage({ notify }: { notify: Notify }) {
   const setDefaultAgent = async (roomId: string, instanceId: string | null) => {
     setBusy(`default-${roomId}`);
     try {
-      const res = await fetch(`/api/v1/rooms/${roomId}/default-agent`, {
+      await apiFetch(`/api/v1/rooms/${roomId}/default-agent`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
+        // The server reads `defaultAgentInstanceId` (see POST /api/v1/rooms/:id/default-agent).
         body: JSON.stringify({ defaultAgentInstanceId: instanceId }),
       });
-      if (!res.ok) throw new Error(await res.text());
       await load();
     } catch (err) {
       notify('error', `Could not set the default agent: ${(err as Error).message}`);
@@ -163,8 +162,7 @@ export function GroupsPage({ notify }: { notify: Notify }) {
     }
     setBusy(`delete-${room.id}`);
     try {
-      const res = await fetch(`/api/v1/rooms/${room.id}`, { method: 'DELETE' });
-      if (!res.ok) throw new Error(await res.text());
+      await apiFetch(`/api/v1/rooms/${room.id}`, { method: 'DELETE' });
       notify('success', `Group "${room.name}" deleted.`);
       await load();
     } catch (err) {
@@ -180,12 +178,11 @@ export function GroupsPage({ notify }: { notify: Notify }) {
   ) => {
     setBusy(`limits-${room.id}`);
     try {
-      const res = await fetch(`/api/v1/rooms/${room.id}`, {
+      await apiFetch(`/api/v1/rooms/${room.id}`, {
         method: 'PUT',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify(limits),
       });
-      if (!res.ok) throw new Error(await res.text());
       notify('success', `Limits updated for "${room.name}".`);
       await load();
     } catch (err) {

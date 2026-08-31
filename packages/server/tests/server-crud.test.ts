@@ -106,7 +106,7 @@ describe('@agentdeck/server v1.0.4 REST Endpoints Suite', () => {
     const manager = AgentDeckManager.createWithDatabase(db);
     const server = await createAgentDeckServer({ port: 0, manager });
 
-    const p = await manager.createPersona({ name: 'P1', role: 'Role', language: 'pt-BR', systemPromptOverlay: '', avatarEmoji: '🤖' });
+    const p = await manager.createPersona({ name: 'P1', role: 'Role', language: 'pt-BR', systemPromptOverlay: '', avatarEmoji: '🤖', isTemplate: false });
     const installations = await manager.scanAndSyncInstallations();
     const inst = await manager.createAgentInstance({ installationId: installations[0]!.id, personaId: p.id, name: 'Inst1' });
 

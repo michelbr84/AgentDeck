@@ -20,6 +20,7 @@
  * is everything an MCP host needs to use tools.
  */
 import readline from 'node:readline';
+import { AGENTDECK_VERSION } from '@agentdeck/shared';
 import {
   AgentDeckManager,
   DEFAULT_INTEROP_LIMITS,
@@ -151,7 +152,7 @@ export async function runMcpServer(): Promise<void> {
             result: {
               protocolVersion: PROTOCOL_VERSION,
               capabilities: { tools: {} },
-              serverInfo: { name: 'agentdeck', version: '1.0.4' },
+              serverInfo: { name: 'agentdeck', version: AGENTDECK_VERSION },
             },
           });
           break;

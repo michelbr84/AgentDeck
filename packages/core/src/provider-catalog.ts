@@ -165,7 +165,18 @@ export async function validateModel(
   }
 
   if (binding.providerId === 'ollama') {
-    const base = (binding.baseUrl ?? 'http://127.0.0.1:11434/v1').replace(/\/v1\/?$/, '');
+    // Only http(s) base URLs are contacted. Residual by design: an authorized
+    // local user can point this at any reachable http(s) host (Ollama on a LAN
+    // box is a supported setup) and learn reachability plus whether the model
+    // is listed — nothing else from the response is surfaced.
+    const raw = (binding.baseUrl ?? 'http://127.0.0.1:11434/v1').trim();
+    if (!/^https?:\/\//i.test(raw)) {
+      return {
+        status: 'unknown',
+        message: 'Ollama baseUrl must start with http:// or https://; skipping validation.',
+      };
+    }
+    const base = raw.replace(/\/v1\/?$/, '');
     const tags = await fetchJson<{ models?: { name: string }[] }>(`${base}/api/tags`, timeoutMs);
     if (!tags?.models) {
       return {

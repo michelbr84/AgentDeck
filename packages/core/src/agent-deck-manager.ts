@@ -129,11 +129,58 @@ export class AgentDeckManager {
   /** Live orchestration runs, so REST/WS/UIs can reach a run's abort signal. */
   private activeRuns = new Map<string, { controller: AbortController; roomId: string }>();
 
+  // TTL cache for "latest version" lookups, shared across manager instances.
+  // A successful lookup is good for an hour. An unknown answer — the adapter
+  // threw, or reported `latestVersion: null` — is kept only briefly: long
+  // enough not to hammer the network on every scan, short enough to recover.
+  // `isOutdated(v, null)` is always false, so remembering a failure for the
+  // full hour would pin every agent to "up to date" after one network blip.
+  private static versionCache = new Map<string, { result: { latestVersion: string | null }; expiresAt: number }>();
+  public static readonly VERSION_CACHE_TTL_MS = 60 * 60 * 1000; // 1 hour
+  public static readonly VERSION_FAILURE_TTL_MS = 60 * 1000; // 1 minute
+
+  /**
+   * Drops the cached latest-version lookup for one adapter, or for all of them
+   * when no id is given, so the next scan fetches it again. Call after anything
+   * that changes what is installed (install, upgrade); otherwise
+   * `version_latest` and the outdated flag can lag the user's own action by up
+   * to an hour.
+   */
+  public static invalidateVersionCache(adapterId?: string): void {
+    if (adapterId === undefined) {
+      AgentDeckManager.versionCache.clear();
+    } else {
+      AgentDeckManager.versionCache.delete(adapterId);
+    }
+  }
+
+  private async getCachedLatestVersion(adapter: AgentAdapter): Promise<{ latestVersion: string | null }> {
+    const key = adapter.definition.id;
+    const cached = AgentDeckManager.versionCache.get(key);
+    if (cached && cached.expiresAt > Date.now()) {
+      return cached.result;
+    }
+    let result: { latestVersion: string | null };
+    try {
+      result = await adapter.getLatestVersion();
+    } catch {
+      result = { latestVersion: null };
+    }
+    const ttl =
+      result.latestVersion === null
+        ? AgentDeckManager.VERSION_FAILURE_TTL_MS
+        : AgentDeckManager.VERSION_CACHE_TTL_MS;
+    AgentDeckManager.versionCache.set(key, { result, expiresAt: Date.now() + ttl });
+    return result;
+  }
+
   private constructor(db: AgentDeckDatabase, eventBus?: EventBus) {
     this.db = db;
     this.eventBus = eventBus || new EventBus();
     this.promptComposer = new PromptComposer();
-    this.upgradeEngine = new TransactionalUpgradeEngine(this.eventBus);
+    this.upgradeEngine = new TransactionalUpgradeEngine(this.eventBus, {
+      onInstallationChanged: (definitionId) => AgentDeckManager.invalidateVersionCache(definitionId),
+    });
     this.orchestrationEngine = new MultiAgentOrchestrationEngine(this);
 
     // Register built-in default adapters
@@ -196,7 +243,7 @@ export class AgentDeckManager {
 
     for (const adapter of this.getAllAdapters()) {
       const detection = await adapter.detect();
-      const latest = await adapter.getLatestVersion();
+      const latest = await this.getCachedLatestVersion(adapter);
 
       const existing = await this.db.db
         .selectFrom('agent_installations')
@@ -699,6 +746,182 @@ export class AgentDeckManager {
     // the same legacy-tolerant posture as the synthetic 'user-default' ids.
     await this.db.db.deleteFrom('room_members').where('member_type', '=', 'user').where('member_id', '=', id).execute();
     await this.db.db.deleteFrom('users').where('id', '=', id).execute();
+  }
+
+  // ==========================================
+  // PERSISTENCE: ORCHESTRATION RUNS
+  // ==========================================
+  public async createOrchestrationRun(params: {
+    roomId: string;
+    triggerMessageId?: string;
+  }): Promise<string> {
+    const id = `run-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`;
+    await this.db.db
+      .insertInto('orchestration_runs')
+      .values({
+        id,
+        room_id: params.roomId,
+        trigger_message_id: params.triggerMessageId || null,
+        status: 'running',
+        turns_executed: 0,
+        tokens_used_json: '{}',
+        cost_usd_json: '{}',
+        started_at: new Date().toISOString(),
+      })
+      .execute();
+    return id;
+  }
+
+  public async finalizeOrchestrationRun(params: {
+    runId: string;
+    status: 'completed' | 'cancelled' | 'failed';
+    turnsExecuted: number;
+    tokensUsed: number;
+    costUSD: number;
+  }): Promise<void> {
+    await this.db.db
+      .updateTable('orchestration_runs')
+      .set({
+        status: params.status,
+        turns_executed: params.turnsExecuted,
+        tokens_used_json: JSON.stringify({ total: params.tokensUsed }),
+        cost_usd_json: JSON.stringify({ total: params.costUSD }),
+        finished_at: new Date().toISOString(),
+      })
+      .where('id', '=', params.runId)
+      .execute();
+  }
+
+  public async listRuns(roomId?: string): Promise<Array<{
+    id: string;
+    roomId: string;
+    status: string;
+    turnsExecuted: number;
+    tokensUsed: number;
+    costUSD: number;
+    startedAt: string;
+    finishedAt: string | null;
+  }>> {
+    let query = this.db.db.selectFrom('orchestration_runs').selectAll();
+    if (roomId) {
+      query = query.where('room_id', '=', roomId);
+    }
+    const rows = await query.orderBy('started_at', 'desc').execute();
+    return rows.map((r) => ({
+      id: r.id,
+      roomId: r.room_id,
+      status: r.status,
+      turnsExecuted: r.turns_executed,
+      tokensUsed: JSON.parse(r.tokens_used_json).total ?? 0,
+      costUSD: JSON.parse(r.cost_usd_json).total ?? 0,
+      startedAt: r.started_at,
+      finishedAt: r.finished_at,
+    }));
+  }
+
+  // ==========================================
+  // PERSISTENCE: AUDIT LOGS & BACKUPS
+  // ==========================================
+  public async writeAuditLog(params: {
+    eventType: string;
+    actorType: string;
+    actorId: string;
+    action: string;
+    resource: string;
+    status: string;
+    details?: Record<string, unknown>;
+  }): Promise<void> {
+    try {
+      const id = `audit-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`;
+      await this.db.db
+        .insertInto('audit_logs')
+        .values({
+          id,
+          event_type: params.eventType,
+          actor_type: params.actorType,
+          actor_id: params.actorId,
+          action: params.action,
+          resource: params.resource,
+          status: params.status,
+          details_json: JSON.stringify(params.details || {}),
+        })
+        .execute();
+    } catch {
+      // Audit log writes must never fail the caller
+    }
+  }
+
+  public async listAuditLogs(): Promise<Array<{
+    id: string;
+    eventType: string;
+    actorType: string;
+    actorId: string;
+    action: string;
+    resource: string;
+    status: string;
+    details: Record<string, unknown>;
+    createdAt: string;
+  }>> {
+    const rows = await this.db.db
+      .selectFrom('audit_logs')
+      .selectAll()
+      .orderBy('created_at', 'desc')
+      .limit(500)
+      .execute();
+    return rows.map((r) => ({
+      id: r.id,
+      eventType: r.event_type,
+      actorType: r.actor_type,
+      actorId: r.actor_id,
+      action: r.action,
+      resource: r.resource,
+      status: r.status,
+      details: JSON.parse(r.details_json),
+      createdAt: r.created_at,
+    }));
+  }
+
+  public async recordBackup(params: {
+    agentDefinitionId: string;
+    backupPath: string;
+    versionBefore: string;
+    metadata: Record<string, unknown>;
+  }): Promise<string> {
+    const id = `backup-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`;
+    await this.db.db
+      .insertInto('backups')
+      .values({
+        id,
+        agent_definition_id: params.agentDefinitionId,
+        backup_path: params.backupPath,
+        version_before: params.versionBefore,
+        metadata_json: JSON.stringify(params.metadata),
+      })
+      .execute();
+    return id;
+  }
+
+  public async listBackups(): Promise<Array<{
+    id: string;
+    agentDefinitionId: string;
+    backupPath: string;
+    versionBefore: string;
+    metadata: Record<string, unknown>;
+    createdAt: string;
+  }>> {
+    const rows = await this.db.db
+      .selectFrom('backups')
+      .selectAll()
+      .orderBy('created_at', 'desc')
+      .execute();
+    return rows.map((r) => ({
+      id: r.id,
+      agentDefinitionId: r.agent_definition_id,
+      backupPath: r.backup_path,
+      versionBefore: r.version_before,
+      metadata: JSON.parse(r.metadata_json),
+      createdAt: r.created_at,
+    }));
   }
 
   // ==========================================

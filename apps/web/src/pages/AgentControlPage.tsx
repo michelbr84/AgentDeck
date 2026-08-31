@@ -16,6 +16,7 @@ import {
   RefreshCw,
   Zap,
 } from 'lucide-react';
+import { apiFetch } from '../api';
 
 export interface ProviderBinding {
   providerId: string;
@@ -93,20 +94,18 @@ export function AgentControlPage({ notify }: { notify: Notify }) {
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const [llmRes, routingRes, catalogRes, agentsRes] = await Promise.all([
-        fetch('/api/v1/agents/llm'),
-        fetch('/api/v1/llm-routing'),
-        fetch('/api/v1/providers/catalog'),
-        fetch('/api/v1/agents'),
+      const [llm, routingBody, catalogEntries, installationList] = await Promise.all([
+        apiFetch<AgentLlmRow[]>('/api/v1/agents/llm'),
+        apiFetch<{
+          routing: LlmRouting | null;
+          credentialPresence: Record<string, boolean>;
+        }>('/api/v1/llm-routing'),
+        apiFetch<CatalogEntry[]>('/api/v1/providers/catalog'),
+        apiFetch<Installation[]>('/api/v1/agents'),
       ]);
-      const llm = (await llmRes.json()) as AgentLlmRow[];
-      const routingBody = (await routingRes.json()) as {
-        routing: LlmRouting | null;
-        credentialPresence: Record<string, boolean>;
-      };
       setRows(llm);
-      setCatalog((await catalogRes.json()) as CatalogEntry[]);
-      setInstallations((await agentsRes.json()) as Installation[]);
+      setCatalog(catalogEntries);
+      setInstallations(installationList);
       setRouting(routingBody.routing);
       setCredentials(routingBody.credentialPresence ?? {});
       if (routingBody.routing) {
@@ -128,12 +127,11 @@ export function AgentControlPage({ notify }: { notify: Notify }) {
     setBusy('routing');
     try {
       if (keyInput.trim()) {
-        const res = await fetch(`/api/v1/secrets/${draftPrimary.providerId}`, {
+        await apiFetch(`/api/v1/secrets/${draftPrimary.providerId}`, {
           method: 'PUT',
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({ value: keyInput.trim() }),
         });
-        if (!res.ok) throw new Error(await res.text());
         setKeyInput('');
       }
 
@@ -148,12 +146,11 @@ export function AgentControlPage({ notify }: { notify: Notify }) {
         updatedAt: new Date().toISOString(),
       };
 
-      const res = await fetch('/api/v1/llm-routing', {
+      await apiFetch('/api/v1/llm-routing', {
         method: 'PUT',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify(body),
       });
-      if (!res.ok) throw new Error(await res.text());
       notify('success', 'Routing saved. Apply it to push the change to every agent.');
       await load();
     } catch (err) {
@@ -166,17 +163,15 @@ export function AgentControlPage({ notify }: { notify: Notify }) {
   const applyToAll = async (dryRun: boolean) => {
     setBusy('apply');
     try {
-      const res = await fetch('/api/v1/llm-routing/apply', {
+      const report = await apiFetch<{
+        outcomes: { agentName: string; status: string; reason?: string }[];
+        partial: boolean;
+        runId: string;
+      }>('/api/v1/llm-routing/apply', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ dryRun }),
       });
-      const report = (await res.json()) as {
-        outcomes: { agentName: string; status: string; reason?: string }[];
-        partial: boolean;
-        runId: string;
-      };
-      if (!res.ok) throw new Error(JSON.stringify(report));
 
       const applied = report.outcomes.filter((o) => o.status === 'applied').length;
       const failed = report.outcomes.filter((o) => o.status === 'failed');
@@ -206,12 +201,11 @@ export function AgentControlPage({ notify }: { notify: Notify }) {
   const testProvider = async (binding: ProviderBinding) => {
     setBusy(`test-${binding.providerId}`);
     try {
-      const res = await fetch('/api/v1/providers/test', {
+      const result = await apiFetch<{ status: string; message: string }>('/api/v1/providers/test', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify(binding),
       });
-      const result = (await res.json()) as { status: string; message: string };
       notify(result.status === 'ok' ? 'success' : result.status === 'not-found' ? 'error' : 'info', result.message);
     } catch (err) {
       notify('error', `Test failed: ${(err as Error).message}`);
@@ -227,13 +221,11 @@ export function AgentControlPage({ notify }: { notify: Notify }) {
         action === 'health'
           ? `/api/v1/agents/${agentId}/health`
           : `/api/v1/agents/${agentId}/${action}`;
-      const res = await fetch(url, {
+      await apiFetch(url, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: action === 'health' ? JSON.stringify({ level: 'level2_connectivity' }) : '{}',
       });
-      const body = await res.json();
-      if (!res.ok) throw new Error(JSON.stringify(body));
       notify('success', `${agentId}: ${action} completed.`);
       await load();
     } catch (err) {

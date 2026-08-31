@@ -164,10 +164,22 @@ describe('plugin Tier-2 loader + YAML manifests', () => {
       abortSignal: new AbortController().signal,
     } as unknown as ExecutionContext;
 
-    const result = await adapter.execute(ctx);
-    // Before the opaque-content fix this threw on the embedded newline.
-    expect(result.content).toContain('first line');
-    expect(result.content).toContain('second line');
+    // Force the REAL execution path — under NODE_ENV=test the adapter would
+    // otherwise return a mock, and this test exists to prove the opaque
+    // argument passing (a multi-line prompt used to throw in the validator).
+    const prevNodeEnv = process.env.NODE_ENV;
+    const prevMock = process.env.AGENTDECK_MOCK_EXECUTION;
+    process.env.NODE_ENV = 'production';
+    process.env.AGENTDECK_MOCK_EXECUTION = 'false';
+    try {
+      const result = await adapter.execute(ctx);
+      // Before the opaque-content fix this threw on the embedded newline.
+      expect(result.content).toContain('first line');
+      expect(result.content).toContain('second line');
+    } finally {
+      process.env.NODE_ENV = prevNodeEnv;
+      process.env.AGENTDECK_MOCK_EXECUTION = prevMock;
+    }
   });
 });
 

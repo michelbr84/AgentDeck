@@ -1,6 +1,6 @@
 {
   "name": "agentdeck-monorepo",
-  "version": "1.0.4",
+  "version": "1.1.0",
   "private": true,
   "type": "module",
   "packageManager": "pnpm@11.22.0",
@@ -11,7 +11,7 @@
     "build": "pnpm -r --filter=!agentdeck-monorepo build",
     "test": "vitest run",
     "lint": "eslint .",
-    "typecheck": "tsc -b",
+    "typecheck": "tsc -b && tsc -p tsconfig.tests.json",
     "clean": "pnpm -r exec rm -rf dist node_modules tsconfig.tsbuildinfo"
   },
   "devDependencies": {

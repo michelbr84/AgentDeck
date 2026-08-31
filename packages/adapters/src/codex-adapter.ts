@@ -289,10 +289,8 @@ export class CodexAdapter implements AgentAdapter {
   }
 
   public async execute(context: ExecutionContext): Promise<ExecutionResult> {
-    const binPath = await this.findBinary();
-    const promptText = context.promptTree.finalRawPrompt;
-
-    if (!binPath) {
+    if (process.env.AGENTDECK_MOCK_EXECUTION === 'true' || process.env.NODE_ENV === 'test') {
+      const promptText = context.promptTree.finalRawPrompt;
       const mockResponse = `[OpenAI Codex] Synthesized code and system execution for: "${promptText.slice(0, 80)}..."\nArchitecture verified against OpenAI model specs.`;
       context.onChunk?.(mockResponse);
       return {
@@ -308,6 +306,13 @@ export class CodexAdapter implements AgentAdapter {
         },
         costUSD: { source: 'estimated', value: 0.002 },
       };
+    }
+
+    const binPath = await this.findBinary();
+    const promptText = context.promptTree.finalRawPrompt;
+
+    if (!binPath) {
+      throw new Error('Codex binary (codex) not found. Install it or deactivate this instance.');
     }
 
     let fullStdout = '';

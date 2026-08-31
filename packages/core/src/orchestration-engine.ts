@@ -57,6 +57,12 @@ interface TurnExtras {
   rawPayload?: Record<string, unknown>;
 }
 
+/** A completed turn: the persisted message plus REAL usage reported by the adapter. */
+interface TurnOutcome {
+  message: Message;
+  usage: { tokens: number; costUSD: number };
+}
+
 const DEBATE_DIRECTIVES = {
   proposer:
     'Debate Role: PROPOSER. Present a clear initial proposal answering the request, with your strongest reasoning.',
@@ -347,9 +353,14 @@ export class MultiAgentOrchestrationEngine {
 
     try {
       const maxTurns = effectiveRoom.maxTurnsPerRun || 10;
+      const runStartedAt = Date.now();
+      const maxRuntimeMs = effectiveRoom.maxRuntimeSec ? effectiveRoom.maxRuntimeSec * 1000 : undefined;
+      // Absolute wall-clock deadline enforced INSIDE turns as well as between
+      // them — a single long turn must not sail past the run's runtime cap.
+      const runDeadlineAt = maxRuntimeMs !== undefined ? runStartedAt + maxRuntimeMs : undefined;
       const budget = new RunBudget({
         maxTurns,
-        maxRuntimeMs: effectiveRoom.maxRuntimeSec ? effectiveRoom.maxRuntimeSec * 1000 : undefined,
+        maxRuntimeMs,
         maxCostUSD: effectiveRoom.maxCostUSD,
       });
       const allInstances = await this.manager.listAgentInstances();
@@ -393,6 +404,17 @@ export class MultiAgentOrchestrationEngine {
         { runId, roomId: effectiveRoom.id }
       );
 
+      // Persist run row (best-effort telemetry, never blocks the run)
+      const dbRunId = await this.manager
+        .createOrchestrationRun({ roomId: effectiveRoom.id, triggerMessageId: userMsg.id })
+        .catch(() => null);
+      const finalizeRun = (status: 'completed' | 'cancelled' | 'failed', turns: number, tokens: number, cost: number) => {
+        if (!dbRunId) return;
+        void this.manager
+          .finalizeOrchestrationRun({ runId: dbRunId, status, turnsExecuted: turns, tokensUsed: tokens, costUSD: cost })
+          .catch(() => {});
+      };
+
       if (!routing.shouldExecute || routing.targetInstances.length === 0) {
         // If actionable feedback message is provided, post a helpful system message in the room
         if (routing.systemFeedbackMessage) {
@@ -417,6 +439,7 @@ export class MultiAgentOrchestrationEngine {
           },
           { runId, roomId: effectiveRoom.id }
         );
+        finalizeRun('completed', 0, 0, 0);
 
         return {
           runId,
@@ -438,7 +461,7 @@ export class MultiAgentOrchestrationEngine {
 
             turnsExecuted++;
             budget.noteTurn();
-            const msg = await this.executeSingleTurn(
+            const outcome = await this.executeSingleTurn(
               runId,
               effectiveRoom,
               target,
@@ -446,13 +469,15 @@ export class MultiAgentOrchestrationEngine {
               producedMessages,
               turnsExecuted,
               options,
-              runSignal
+              runSignal,
+              undefined,
+              runDeadlineAt
             );
-            if (msg) {
-              producedMessages.push(msg);
-              totalTokens += 150;
-              totalCost += 0.0005;
-              budget.noteCost(0.0005);
+            if (outcome) {
+              producedMessages.push(outcome.message);
+              totalTokens += outcome.usage.tokens;
+              totalCost += outcome.usage.costUSD;
+              budget.noteCost(outcome.usage.costUSD);
             }
           }
         } else if (effectiveRoom.mode === 'panel') {
@@ -480,17 +505,19 @@ export class MultiAgentOrchestrationEngine {
                 historySnapshot,
                 index + 1,
                 options,
-                runSignal
+                runSignal,
+                undefined,
+                runDeadlineAt
               );
             }
           );
           turnsExecuted += targets.length;
-          for (const msg of settled) {
-            if (msg) {
-              producedMessages.push(msg);
-              totalTokens += 150;
-              totalCost += 0.0005;
-              budget.noteCost(0.0005);
+          for (const outcome of settled) {
+            if (outcome) {
+              producedMessages.push(outcome.message);
+              totalTokens += outcome.usage.tokens;
+              totalCost += outcome.usage.costUSD;
+              budget.noteCost(outcome.usage.costUSD);
             }
           }
         } else if (effectiveRoom.mode === 'debate') {
@@ -520,7 +547,7 @@ export class MultiAgentOrchestrationEngine {
             budget.noteTurn();
             const latestContext =
               producedMessages[producedMessages.length - 1]?.content || options.triggerMessage;
-            const msg = await this.executeSingleTurn(
+            const outcome = await this.executeSingleTurn(
               runId,
               effectiveRoom,
               step.instance,
@@ -532,13 +559,14 @@ export class MultiAgentOrchestrationEngine {
               {
                 turnDirective: DEBATE_DIRECTIVES[step.role],
                 rawPayload: { debateRole: step.role },
-              }
+              },
+              runDeadlineAt
             );
-            if (msg) {
-              producedMessages.push(msg);
-              totalTokens += 150;
-              totalCost += 0.0005;
-              budget.noteCost(0.0005);
+            if (outcome) {
+              producedMessages.push(outcome.message);
+              totalTokens += outcome.usage.tokens;
+              totalCost += outcome.usage.costUSD;
+              budget.noteCost(outcome.usage.costUSD);
             }
           }
         } else if (effectiveRoom.mode === 'round_robin') {
@@ -551,7 +579,7 @@ export class MultiAgentOrchestrationEngine {
             turnsExecuted++;
             budget.noteTurn();
             const latestContext = producedMessages[producedMessages.length - 1]?.content || options.triggerMessage;
-            const msg = await this.executeSingleTurn(
+            const outcome = await this.executeSingleTurn(
               runId,
               effectiveRoom,
               inst,
@@ -559,13 +587,15 @@ export class MultiAgentOrchestrationEngine {
               producedMessages,
               turnsExecuted,
               options,
-              runSignal
+              runSignal,
+              undefined,
+              runDeadlineAt
             );
-            if (msg) {
-              producedMessages.push(msg);
-              totalTokens += 150;
-              totalCost += 0.0005;
-              budget.noteCost(0.0005);
+            if (outcome) {
+              producedMessages.push(outcome.message);
+              totalTokens += outcome.usage.tokens;
+              totalCost += outcome.usage.costUSD;
+              budget.noteCost(outcome.usage.costUSD);
             }
           }
         } else if (effectiveRoom.mode === 'coordinator') {
@@ -579,12 +609,28 @@ export class MultiAgentOrchestrationEngine {
               producedMessages,
               options,
               runSignal,
-              budget
+              budget,
+              runDeadlineAt
             );
             turnsExecuted += outcome.turns;
             totalTokens += outcome.tokens;
             totalCost += outcome.cost;
           }
+        }
+
+        // Surface a budget stop (runtime/cost) as a system message in the room,
+        // so a capped run reads as capped rather than silently short.
+        const budgetStop = budget.stopReason;
+        if (!runSignal.aborted && budgetStop && !budgetStop.allowed && budgetStop.code !== 'turn_budget_exhausted') {
+          const capMsg = await this.manager.postMessage({
+            roomId: effectiveRoom.id,
+            senderType: 'user',
+            senderId: 'system',
+            senderDisplayName: 'AgentDeck',
+            content: `⚠️ Run stopped: ${budgetStop.message}`,
+            contentType: 'system',
+          });
+          producedMessages.push(capMsg);
         }
 
         const aborted = runSignal.aborted;
@@ -618,6 +664,8 @@ export class MultiAgentOrchestrationEngine {
           );
         }
 
+        finalizeRun(aborted ? 'cancelled' : 'completed', turnsExecuted, totalTokens, totalCost);
+
         return {
           runId,
           roomId: effectiveRoom.id,
@@ -635,6 +683,7 @@ export class MultiAgentOrchestrationEngine {
           { runId, error: errorMsg },
           { runId, roomId: effectiveRoom.id }
         );
+        finalizeRun('failed', turnsExecuted, totalTokens, totalCost);
 
         return {
           runId,
@@ -674,17 +723,18 @@ export class MultiAgentOrchestrationEngine {
     producedMessages: Message[],
     options: OrchestrationRunOptions,
     runSignal: AbortSignal,
-    budget: RunBudget
+    budget: RunBudget,
+    runDeadlineAt?: number
   ): Promise<{ turns: number; tokens: number; cost: number }> {
     let turns = 0;
     let tokens = 0;
     let cost = 0;
-    const noteMessage = (msg: Message | null): void => {
-      if (!msg) return;
-      producedMessages.push(msg);
-      tokens += 150;
-      cost += 0.0005;
-      budget.noteCost(0.0005);
+    const noteOutcome = (outcome: TurnOutcome | null): void => {
+      if (!outcome) return;
+      producedMessages.push(outcome.message);
+      tokens += outcome.usage.tokens;
+      cost += outcome.usage.costUSD;
+      budget.noteCost(outcome.usage.costUSD);
     };
 
     const specialists = allMembers.filter((i) => i.id !== lead.id);
@@ -700,7 +750,7 @@ export class MultiAgentOrchestrationEngine {
       specialists.length > 0
         ? `Coordinator Phase: PLAN. Break the user's request into subtasks and assign each to the best-fitting team member below. Reply with a fenced JSON block shaped exactly like {"subtasks": [{"task": "...", "specialist": "<member name>"}]}. Team roster:\n${roster}`
         : 'Coordinator Phase: PLAN. You are the only member of this room: analyze the request and answer it directly and completely.';
-    const planMsg = await this.executeSingleTurn(
+    const planOutcome = await this.executeSingleTurn(
       runId,
       room,
       lead,
@@ -709,14 +759,15 @@ export class MultiAgentOrchestrationEngine {
       turns,
       options,
       runSignal,
-      { turnDirective: planDirective, rawPayload: { coordinatorPhase: 'plan' } }
+      { turnDirective: planDirective, rawPayload: { coordinatorPhase: 'plan' } },
+      runDeadlineAt
     );
-    noteMessage(planMsg);
+    noteOutcome(planOutcome);
 
-    if (specialists.length === 0 || !planMsg) return { turns, tokens, cost };
+    if (specialists.length === 0 || !planOutcome) return { turns, tokens, cost };
 
     // PARSE + DELEGATE
-    const subtasks = parseCoordinatorPlan(planMsg.content);
+    const subtasks = parseCoordinatorPlan(planOutcome.message.content);
     const { targets: boundedSubtasks, dropped } = capFanOut(subtasks);
     this.manager.eventBus.emit(
       'coordinator:plan',
@@ -752,18 +803,19 @@ export class MultiAgentOrchestrationEngine {
           {
             turnDirective: `Coordinator Phase: DELEGATE. The coordinator "${lead.name}" assigned you this subtask. Complete it directly and thoroughly.`,
             rawPayload: { coordinatorPhase: 'delegate' },
-          }
+          },
+          runDeadlineAt
         );
       }
     );
     turns += assignments.length;
-    for (const msg of settled) noteMessage(msg);
+    for (const outcome of settled) noteOutcome(outcome);
 
     // SYNTHESIS
     if (runSignal.aborted || !budget.check().allowed) return { turns, tokens, cost };
     turns++;
     budget.noteTurn();
-    const synthesisMsg = await this.executeSingleTurn(
+    const synthesisOutcome = await this.executeSingleTurn(
       runId,
       room,
       lead,
@@ -776,9 +828,10 @@ export class MultiAgentOrchestrationEngine {
         turnDirective:
           "Coordinator Phase: SYNTHESIS. The conversation history contains your plan and the specialists' answers. Synthesize them into one final, complete answer for the user.",
         rawPayload: { coordinatorPhase: 'synthesis' },
-      }
+      },
+      runDeadlineAt
     );
-    noteMessage(synthesisMsg);
+    noteOutcome(synthesisOutcome);
 
     return { turns, tokens, cost };
   }
@@ -792,8 +845,9 @@ export class MultiAgentOrchestrationEngine {
     turnIndex: number,
     options: OrchestrationRunOptions,
     runSignal: AbortSignal,
-    extras?: TurnExtras
-  ): Promise<Message | null> {
+    extras?: TurnExtras,
+    runDeadlineAt?: number
+  ): Promise<TurnOutcome | null> {
     const adapter = this.manager.getAdapter(instance.installation.definitionId);
     if (!adapter) return null;
 
@@ -836,6 +890,22 @@ export class MultiAgentOrchestrationEngine {
       () => abortCtrl.abort(new TurnTimeoutError(`Turn timed out after ${Math.round(timeoutMs / 1000)}s`)),
       timeoutMs
     );
+
+    // The RUN's wall-clock budget is enforced inside the turn too — one long
+    // turn must not sail past room.maxRuntimeSec just because the between-turn
+    // checks never got a chance to run.
+    let runDeadlineTimer: NodeJS.Timeout | undefined;
+    if (runDeadlineAt !== undefined) {
+      const remaining = runDeadlineAt - Date.now();
+      if (remaining <= 0) {
+        abortCtrl.abort(new TurnTimeoutError('Run exceeded its runtime cap before this turn could start'));
+      } else {
+        runDeadlineTimer = setTimeout(
+          () => abortCtrl.abort(new TurnTimeoutError('Run exceeded its runtime cap mid-turn')),
+          remaining
+        );
+      }
+    }
 
     // Coalesced streaming: buffer chunks and flush on a short timer with a
     // monotonic seq, so the event bus (and each WebSocket) sees a bounded rate.
@@ -897,12 +967,25 @@ export class MultiAgentOrchestrationEngine {
         content: rawContent,
         contentType: 'text',
         turnIndex,
-        rawPayload: extras?.rawPayload,
+        rawPayload: {
+          ...extras?.rawPayload,
+          transport: execResult.transport,
+          exitCode: execResult.exitCode,
+          tokensTotal: execResult.tokensUsed.total.value,
+          costUSD: execResult.costUSD.value,
+          usageSource: execResult.tokensUsed.total.source,
+        },
       });
 
       this.manager.eventBus.emit('run:turn:completed', { ...turnInfo, messageId: msg.id }, emitMeta);
       options.onTurnComplete?.(instance.name, msg);
-      return msg;
+      return {
+        message: msg,
+        usage: {
+          tokens: execResult.tokensUsed.total.value ?? 0,
+          costUSD: execResult.costUSD.value ?? 0,
+        },
+      };
     } catch (err) {
       const abortReason = abortCtrl.signal.aborted ? (abortCtrl.signal.reason as unknown) : undefined;
 
@@ -938,10 +1021,16 @@ export class MultiAgentOrchestrationEngine {
         content: userFacingErrorMessage,
         contentType: 'text',
         turnIndex,
+        rawPayload: {
+          ...extras?.rawPayload,
+          error: true,
+          errorMessage: sanitizedReason,
+        },
       });
-      return fallbackMsg;
+      return { message: fallbackMsg, usage: { tokens: 0, costUSD: 0 } };
     } finally {
       clearTimeout(timeoutTimer);
+      if (runDeadlineTimer) clearTimeout(runDeadlineTimer);
       runSignal.removeEventListener('abort', onRunAbort);
       flushChunks();
     }
