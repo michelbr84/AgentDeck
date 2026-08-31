@@ -5,6 +5,10 @@ import path from 'node:path';
 import os from 'node:os';
 import fs from 'node:fs/promises';
 import { runSetupWizard } from './wizard/index.js';
+import { runAgentsSetup } from './agents/setup.js';
+import { runAgentsStatus } from './agents/status.js';
+import { runAgentsRollback } from './agents/rollback.js';
+import { runAgentsLink } from './agents/link.js';
 import { AgentDeckManager, ChatService } from '@agentdeck/core';
 import type { RoomMode } from '@agentdeck/protocol';
 import { createAgentDeckServer } from '@agentdeck/server';
@@ -30,11 +34,15 @@ program
     }
   });
 
-// 2. STATUS & LIST & AGENTS
+// 2. STATUS & LIST
+//
+// The `agents` alias moved to its own command group (`agentdeck agents ...`),
+// which provisions the agent binaries and their LLM routing. `agentdeck agents`
+// with no subcommand still lands on `agents setup`, and `status`/`list` are
+// unchanged for the instance matrix.
 program
   .command('status')
   .alias('list')
-  .alias('agents')
   .description('Display status and health matrix for all configured agents and installations')
   .action(async () => {
     const manager = await AgentDeckManager.create();
@@ -275,6 +283,89 @@ program
   .description('Stop running background AgentDeck daemon process')
   .action(() => {
     console.log(chalk.yellow('To stop foreground daemon, press Ctrl+C in its terminal session.'));
+  });
+
+// 8b. AGENT PROVISIONING + LLM ROUTING
+//
+// `setup` (above) configures personas and instances. `agents setup` is the
+// other half: it installs/updates the agent binaries themselves and points all
+// of them at one provider+model pair.
+const agentsCommand = program
+  .command('agents')
+  .description('Provision the managed agents and point them all at one LLM');
+
+agentsCommand
+  .command('setup', { isDefault: true })
+  .description('Detect, install/update, and configure the LLM for every managed agent')
+  .option('--agents <ids>', 'comma-separated agent ids (default: all four managed agents)')
+  .option('--provider <id>', 'primary provider id (default: openrouter)')
+  .option('--model <id>', 'primary model id (default: z-ai/glm-5.3-flash)')
+  .option('--backup-provider <id>', 'backup provider id (default: ollama)')
+  .option('--backup-model <id>', 'backup model id (default: qwen3.5:2b)')
+  .option('--api-key-stdin', 'read the primary provider API key from stdin')
+  .option('--per-agent', 'configure each agent individually instead of applying one routing')
+  .option('--force', 'overwrite config keys the user hand-edited since the last apply')
+  .option('--dry-run', 'report what would change without writing anything')
+  .option('-y, --yes', 'accept defaults and skip prompts')
+  .action(async (options) => {
+    try {
+      await runAgentsSetup(options);
+    } catch (err) {
+      console.error(chalk.red(`\nSetup falhou: ${(err as Error).message}`));
+      process.exitCode = 1;
+    }
+  });
+
+agentsCommand
+  .command('status')
+  .description('Show what is installed and where each agent currently points')
+  .action(async () => {
+    try {
+      await runAgentsStatus();
+    } catch (err) {
+      console.error(chalk.red(`\nStatus falhou: ${(err as Error).message}`));
+      process.exitCode = 1;
+    }
+  });
+
+agentsCommand
+  .command('link')
+  .description('Wire the agents so they can call each other (MCP + rooms)')
+  .option('--dry-run', 'report what would be registered without writing')
+  .option('--garra-bin <path>', 'path to the garra binary (default: resolved from PATH)')
+  .action(async (options) => {
+    try {
+      await runAgentsLink(options);
+    } catch (err) {
+      console.error(chalk.red(`\nLink falhou: ${(err as Error).message}`));
+      process.exitCode = 1;
+    }
+  });
+
+agentsCommand
+  .command('rollback')
+  .description('Restore agent configs captured before a routing apply')
+  .option('--run <id>', 'run id to restore (omit to list available runs)')
+  .option('--agent <id>', 'restore only this agent')
+  .action(async (options) => {
+    try {
+      await runAgentsRollback(options);
+    } catch (err) {
+      console.error(chalk.red(`\nRollback falhou: ${(err as Error).message}`));
+      process.exitCode = 1;
+    }
+  });
+
+// 8c. MCP SERVER
+//
+// Exposes the deck over MCP stdio so any agent can reach any other. stdout is
+// reserved for JSON-RPC — see apps/cli/src/mcp-server.ts.
+program
+  .command('mcp-server')
+  .description('Expose this deck as an MCP server over stdio (for agent-to-agent calls)')
+  .action(async () => {
+    const { runMcpServer } = await import('./mcp-server.js');
+    await runMcpServer();
   });
 
 // 9. PLUGIN MANAGEMENT (LIST / CREATE TEMPLATE)

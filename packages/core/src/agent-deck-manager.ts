@@ -29,6 +29,7 @@ import {
 import { ensureSecureDirectory } from '@agentdeck/security';
 import path from 'node:path';
 import os from 'node:os';
+import { isOutdated as isVersionOutdated } from '@agentdeck/adapters';
 
 export interface ManagerOptions {
   db?: AgentDeckDatabase;
@@ -120,11 +121,11 @@ export class AgentDeckManager {
         .executeTakeFirst();
 
       const id = existing?.id || `inst-${adapter.definition.id}`;
+      // Semver, not string equality: `"garra 0.3.4"` vs `"0.3.4"` and `"0.10.0"`
+      // vs `"0.9.0"` both compare wrong lexically, and a false "outdated" pushes
+      // the wizard into an upgrade the user never needed.
       const isOutdated =
-        detection.installed &&
-        detection.version &&
-        latest.latestVersion &&
-        detection.version !== latest.latestVersion;
+        detection.installed && isVersionOutdated(detection.version, latest.latestVersion);
 
       const state = {
         ...detection.state,

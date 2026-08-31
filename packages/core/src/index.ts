@@ -6,3 +6,6 @@ export * from './orchestration-engine.js';
 export * from './chat-service.js';
 export * from './plugin-loader.js';
 
+export * from './provider-catalog.js';
+export * from './routing-service.js';
+export * from './interop-guardrails.js';

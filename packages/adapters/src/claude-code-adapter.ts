@@ -18,9 +18,38 @@ import {
   UpgradeOptions,
   BackupResult,
   executeSafeCommand,
+  ApplyLlmConfigOptions,
+  ApplyLlmConfigResult,
+  ConfigDiffEntry,
+  LlmConfigCapabilities,
+  LlmConfigReadResult,
+  LlmConfigurable,
+  OWNERSHIP_KEY,
+  assertPrivateBeforeSecret,
+  buildOwnershipMarker,
+  detectDrift,
+  diffKeys,
+  getPath,
+  readJsonConfig,
+  readOwnershipMarker,
+  routingHash,
+  setPath,
+  writeJsonConfigAtomic,
 } from '@agentdeck/adapter-sdk';
+import type { LlmRouting, ProviderBinding } from '@agentdeck/protocol';
+import { AGENTDECK_VERSION } from '@agentdeck/shared';
 
-export class ClaudeCodeAdapter implements AgentAdapter {
+/**
+ * Where Claude Code is pointed when AgentDeck manages its routing.
+ *
+ * Claude Code speaks only the Anthropic Messages wire and has a single
+ * `ANTHROPIC_MODEL` slot — no native fallback. Pointing it at the local GarraIA
+ * gateway gives it both: the gateway translates to whatever provider is
+ * configured and performs the primary→backup failover on Claude Code's behalf.
+ */
+const GARRAIA_GATEWAY_URL = process.env['GARRAIA_GATEWAY_URL'] ?? 'http://127.0.0.1:3888';
+
+export class ClaudeCodeAdapter implements AgentAdapter, LlmConfigurable {
   public readonly definition: AgentDefinition = {
     id: 'claude-code',
     name: 'Claude Code',
@@ -297,6 +326,18 @@ export class ClaudeCodeAdapter implements AgentAdapter {
           description: 'Global Claude Code authentication and user config',
           required: false,
         },
+        {
+          sourcePath: path.join(os.homedir(), '.claude', 'settings.json'),
+          relativePath: '.claude/settings.json',
+          description: 'Claude Code user settings (env block, model, MCP servers)',
+          required: false,
+        },
+        {
+          sourcePath: path.join(os.homedir(), '.claude', 'settings.local.json'),
+          relativePath: '.claude/settings.local.json',
+          description: 'Claude Code local settings overrides',
+          required: false,
+        },
       ],
     };
 
@@ -352,10 +393,136 @@ export class ClaudeCodeAdapter implements AgentAdapter {
   public async rollback(backup: BackupResult): Promise<void> {
     for (const file of backup.backedUpFiles) {
       const src = path.join(backup.backupPath, file);
-      const dest = path.join(os.homedir(), file);
+      const item = backup.manifest.items.find((i) => i.relativePath === file);
+      const dest = item ? item.sourcePath : path.join(os.homedir(), file);
       await fs.mkdir(path.dirname(dest), { recursive: true });
       await fs.copyFile(src, dest);
     }
+  }
+
+
+  // ==========================================
+  // LlmConfigurable
+  // ==========================================
+
+  public readonly llmConfig: LlmConfigCapabilities = {
+    // ANTHROPIC_MODEL is a single string — there is no second slot to write a
+    // backup into. Rather than lie, we route through the GarraIA gateway and
+    // let it do the failover.
+    backupStrategy: 'via-gateway',
+    supportsBackup: true,
+    keyDelivery: 'gateway-proxy',
+    configFiles: [path.join(os.homedir(), '.claude', 'settings.json')],
+  };
+
+  private get settingsPath(): string {
+    return path.join(os.homedir(), '.claude', 'settings.json');
+  }
+
+  private managedKeys(routing: LlmRouting): { key: string; value: string; secret?: boolean }[] {
+    return [
+      { key: 'env.ANTHROPIC_BASE_URL', value: GARRAIA_GATEWAY_URL },
+      { key: 'env.ANTHROPIC_MODEL', value: routing.primary.model },
+      {
+        key: 'env.ANTHROPIC_SMALL_FAST_MODEL',
+        value: routing.backup?.model ?? routing.primary.model,
+      },
+    ];
+  }
+
+  public async readLlmConfig(): Promise<LlmConfigReadResult> {
+    let settings: Record<string, unknown>;
+    try {
+      settings = await readJsonConfig(this.settingsPath);
+    } catch (err) {
+      return {
+        primary: null,
+        backup: null,
+        managedByAgentDeck: false,
+        routingHash: null,
+        drift: [],
+        warnings: [(err as Error).message],
+      };
+    }
+
+    const model = getPath(settings, 'env.ANTHROPIC_MODEL');
+    const baseUrl = getPath(settings, 'env.ANTHROPIC_BASE_URL');
+    const marker = readOwnershipMarker(settings);
+    const primary: ProviderBinding | null =
+      typeof model === 'string' && model
+        ? {
+            providerId: 'garraia-gateway',
+            model,
+            ...(typeof baseUrl === 'string' ? { baseUrl } : {}),
+          }
+        : null;
+
+    return {
+      primary,
+      backup: null,
+      managedByAgentDeck: marker !== null,
+      routingHash: marker?.routingHash ?? null,
+      drift: [],
+      warnings: [],
+    };
+  }
+
+  public async applyLlmConfig(
+    routing: LlmRouting,
+    opts: ApplyLlmConfigOptions
+  ): Promise<ApplyLlmConfigResult> {
+    const warnings: string[] = [
+      'Claude Code now routes through the local GarraIA gateway. That replaces ' +
+        'Anthropic subscription auth with per-token billing on the configured provider, ' +
+        'and prompt caching is not forwarded. The gateway must be running (`garra start`).',
+    ];
+    const file = this.settingsPath;
+    const settings = await readJsonConfig(file);
+    const marker = readOwnershipMarker(settings);
+    const desired = this.managedKeys(routing);
+
+    const drift = detectDrift(settings, marker, desired.map(({ key, value }) => ({ key, value })));
+    if (marker?.routingHash === routingHash(routing) && drift.length === 0) {
+      return { changed: false, alreadyCurrent: true, diff: [], filesWritten: [], backup: null, warnings };
+    }
+    if (drift.length > 0 && !opts.force) {
+      throw new Error(
+        `${file} has hand-edited keys AgentDeck manages (${drift.join(', ')}). ` +
+          'Re-run with --force to overwrite them.'
+      );
+    }
+
+    const diff: ConfigDiffEntry[] = diffKeys(file, settings, desired);
+    if (opts.dryRun) {
+      return { changed: diff.length > 0, alreadyCurrent: false, diff, filesWritten: [], backup: null, warnings };
+    }
+
+    await assertPrivateBeforeSecret(file);
+    opts.onProgress?.('Pointing Claude Code at the GarraIA gateway');
+
+    for (const { key, value } of desired) setPath(settings, key, value);
+    // The gateway holds the provider credential; Claude Code gets a local
+    // bearer token instead, so the OpenRouter key never lands in this file.
+    setPath(settings, 'env.ANTHROPIC_AUTH_TOKEN', 'agentdeck-local');
+    // Blanked deliberately: a stale ANTHROPIC_API_KEY takes precedence over the
+    // auth token and would send requests straight past the gateway.
+    setPath(settings, 'env.ANTHROPIC_API_KEY', '');
+
+    settings[OWNERSHIP_KEY] = buildOwnershipMarker(
+      routing,
+      desired.map((d) => d.key),
+      AGENTDECK_VERSION,
+      new Date().toISOString()
+    );
+
+    await writeJsonConfigAtomic(file, settings);
+
+    const verify = await readJsonConfig(file);
+    if (getPath(verify, 'env.ANTHROPIC_MODEL') !== routing.primary.model) {
+      throw new Error(`Claude Code settings write did not take effect in ${file}`);
+    }
+
+    return { changed: true, alreadyCurrent: false, diff, filesWritten: [file], backup: null, warnings };
   }
 
   public async execute(context: ExecutionContext): Promise<ExecutionResult> {

@@ -32,3 +32,34 @@ describe('AgentDeck Database Real Migration & Integrity Suite', () => {
     await fs.rm(tempDir, { recursive: true, force: true });
   });
 });
+
+describe('003_llm_routing', () => {
+  it('adds the routing table and the per-instance override column', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'agentdeck-mig-v3-'));
+    const db = new AgentDeckDatabase(path.join(dir, 'test.db'));
+    await db.migrate();
+
+    // Singleton row round-trips.
+    await db.db
+      .insertInto('llm_routing')
+      .values({
+        id: 'default',
+        primary_json: JSON.stringify({ providerId: 'openrouter', model: 'z-ai/glm-5.3-flash' }),
+        backup_json: JSON.stringify({ providerId: 'ollama', model: 'qwen3.5:2b' }),
+        updated_at: new Date().toISOString(),
+      })
+      .execute();
+    const row = await db.db
+      .selectFrom('llm_routing')
+      .selectAll()
+      .where('id', '=', 'default')
+      .executeTakeFirst();
+    expect(row?.primary_json).toContain('z-ai/glm-5.3-flash');
+
+    // Re-running must be a no-op, not a hard failure.
+    await db.migrate();
+
+    await db.close();
+    await fs.rm(dir, { recursive: true, force: true });
+  });
+});

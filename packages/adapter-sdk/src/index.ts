@@ -131,3 +131,5 @@ export interface AgentAdapter {
    */
   execute(context: ExecutionContext): Promise<ExecutionResult>;
 }
+export * from './llm-configurable.js';
+export * from './config-merge.js';

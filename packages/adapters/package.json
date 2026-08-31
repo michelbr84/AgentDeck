@@ -17,7 +17,8 @@
   "dependencies": {
     "@agentdeck/protocol": "workspace:*",
     "@agentdeck/security": "workspace:*",
-    "@agentdeck/adapter-sdk": "workspace:*"
+    "@agentdeck/adapter-sdk": "workspace:*",
+    "@agentdeck/shared": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "^22.13.0",

@@ -1,9 +1,243 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=JetBrains+Mono:wght@400;600&display=swap');
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
+/**
+ * Garra Glass — the design system shared with the GarraIA web console
+ * (ADR 0009). Tokens are the source of truth; nothing hardcodes a hex.
+ *
+ * Two rules carried over from the ADR that are easy to violate by accident:
+ *   1. No CDN CSS frameworks. Icons are inline SVG, not an icon font.
+ *   2. Glassmorphism is opt-in per surface, because `backdrop-filter` is
+ *      expensive — panels and the header get it, scrolling lists do not.
+ */
+:root {
+  /* Background */
+  --garra-bg: #041531;
+  --garra-bg-2: #071f4c;
+  --garra-sidebar: #031126;
+  --garra-sidebar-2: #061b3d;
+
+  /* Glass panels */
+  --garra-panel: rgba(255, 255, 255, 0.075);
+  --garra-panel-2: rgba(255, 255, 255, 0.11);
+  --garra-border: rgba(255, 255, 255, 0.13);
+  --garra-border-strong: rgba(255, 255, 255, 0.22);
+
+  /* Text */
+  --garra-text: #f7fbff;
+  --garra-muted: #9fb2d4;
+  --garra-muted-2: #7186ae;
+
+  /* Accents — gold for CTAs, cyan for info and focus */
+  --garra-primary: #ffd400;
+  --garra-primary-rgb: 255, 212, 0;
+  --garra-accent: #16d9ff;
+  --garra-accent-rgb: 22, 217, 255;
+  --garra-success: #20e887;
+  --garra-warning: #ffb020;
+  --garra-danger: #ff5c7a;
+  --garra-purple: #a78bfa;
+
+  /* Shape */
+  --garra-radius: 22px;
+  --garra-radius-sm: 14px;
+  --garra-shadow: 0 28px 90px rgba(0, 0, 0, 0.38);
+
+  /* Typography */
+  --garra-font: 'Inter', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --garra-mono: 'JetBrains Mono', 'SF Mono', Consolas, monospace;
+}
+
+/* An explicit light choice wins; otherwise the system preference decides. */
+:root[data-theme='light'],
+:root[data-bs-theme='light'] {
+  --garra-bg: #edf4ff;
+  --garra-bg-2: #dbeaff;
+  --garra-sidebar: #071a38;
+  --garra-sidebar-2: #092552;
+  --garra-panel: rgba(255, 255, 255, 0.82);
+  --garra-panel-2: rgba(255, 255, 255, 0.96);
+  --garra-border: rgba(6, 24, 54, 0.13);
+  --garra-border-strong: rgba(6, 24, 54, 0.24);
+  --garra-text: #06142b;
+  --garra-muted: #466080;
+  --garra-muted-2: #607796;
+  --garra-shadow: 0 28px 90px rgba(44, 78, 125, 0.18);
+}
+
 body {
   margin: 0;
-  background-color: #020617;
-  color: #f8fafc;
+  font-family: var(--garra-font);
+  color: var(--garra-text);
+  background:
+    radial-gradient(circle at 12% 8%, rgba(var(--garra-primary-rgb), 0.16), transparent 30%),
+    radial-gradient(circle at 82% 0%, rgba(var(--garra-accent-rgb), 0.19), transparent 34%),
+    radial-gradient(circle at 78% 90%, rgba(167, 139, 250, 0.14), transparent 34%),
+    linear-gradient(135deg, var(--garra-bg), var(--garra-bg-2));
+  background-attachment: fixed;
+  min-height: 100vh;
+}
+
+/* 44px grid, fixed behind the content. */
+body::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  background-image:
+    linear-gradient(rgba(255, 255, 255, 0.03) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.03) 1px, transparent 1px);
+  background-size: 44px 44px;
+  z-index: 0;
+}
+
+/* Solid fallback: without backdrop-filter, translucent panels are unreadable. */
+@supports not (backdrop-filter: blur(1px)) {
+  :root {
+    --garra-panel: rgba(15, 28, 58, 0.92);
+    --garra-panel-2: rgba(20, 36, 70, 0.96);
+  }
+  :root[data-theme='light'],
+  :root[data-bs-theme='light'] {
+    --garra-panel: rgba(255, 255, 255, 0.96);
+    --garra-panel-2: #ffffff;
+  }
+}
+
+@layer components {
+  .glass-panel {
+    background: var(--garra-panel);
+    border: 1px solid var(--garra-border);
+    border-radius: var(--garra-radius);
+    box-shadow: var(--garra-shadow);
+    backdrop-filter: blur(18px);
+    -webkit-backdrop-filter: blur(18px);
+  }
+
+  .pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 10px;
+    border-radius: 999px;
+    background: var(--garra-panel);
+    border: 1px solid var(--garra-border);
+    font-size: 11px;
+    font-weight: 700;
+    color: var(--garra-text);
+    white-space: nowrap;
+  }
+  .pill-success {
+    background: rgba(32, 232, 135, 0.14);
+    border-color: rgba(32, 232, 135, 0.3);
+    color: var(--garra-success);
+  }
+  .pill-warning {
+    background: rgba(255, 176, 32, 0.14);
+    border-color: rgba(255, 176, 32, 0.3);
+    color: var(--garra-warning);
+  }
+  .pill-danger {
+    background: rgba(255, 92, 122, 0.14);
+    border-color: rgba(255, 92, 122, 0.3);
+    color: var(--garra-danger);
+  }
+  .pill-muted {
+    color: var(--garra-muted);
+  }
+
+  .status-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 999px;
+    background: var(--garra-success);
+    box-shadow: 0 0 0 4px rgba(32, 232, 135, 0.18);
+    flex-shrink: 0;
+  }
+  .status-dot-warning {
+    background: var(--garra-warning);
+    box-shadow: 0 0 0 4px rgba(255, 176, 32, 0.18);
+  }
+  .status-dot-danger {
+    background: var(--garra-danger);
+    box-shadow: 0 0 0 4px rgba(255, 92, 122, 0.18);
+  }
+  .status-dot-offline {
+    background: var(--garra-muted-2);
+    box-shadow: none;
+  }
+
+  /* Gold CTA — the one high-emphasis action per surface. */
+  .btn-gold {
+    font-family: var(--garra-font);
+    font-weight: 800;
+    font-size: 13px;
+    padding: 9px 16px;
+    border-radius: 12px;
+    border: none;
+    background: linear-gradient(135deg, var(--garra-primary), #fff3a0);
+    color: #05142c;
+    cursor: pointer;
+    box-shadow: 0 12px 26px rgba(var(--garra-primary-rgb), 0.32);
+    transition: transform 120ms ease, box-shadow 120ms ease;
+  }
+  .btn-gold:hover:not(:disabled) {
+    transform: translateY(-1px);
+    box-shadow: 0 16px 32px rgba(var(--garra-primary-rgb), 0.4);
+  }
+  .btn-gold:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+    box-shadow: none;
+  }
+
+  .btn-ghost {
+    font-family: var(--garra-font);
+    font-weight: 600;
+    font-size: 12px;
+    padding: 7px 13px;
+    border-radius: 10px;
+    background: var(--garra-panel);
+    border: 1px solid var(--garra-border);
+    color: var(--garra-text);
+    cursor: pointer;
+    transition: border-color 120ms ease, background 120ms ease;
+  }
+  .btn-ghost:hover:not(:disabled) {
+    border-color: var(--garra-border-strong);
+    background: var(--garra-panel-2);
+  }
+  .btn-ghost:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+  }
+
+  .field {
+    width: 100%;
+    background: rgba(0, 0, 0, 0.22);
+    border: 1px solid var(--garra-border);
+    border-radius: 10px;
+    padding: 8px 11px;
+    color: var(--garra-text);
+    font-family: var(--garra-font);
+    font-size: 13px;
+  }
+  .field:focus {
+    outline: none;
+    border-color: var(--garra-accent);
+    box-shadow: 0 0 0 3px rgba(var(--garra-accent-rgb), 0.18);
+  }
+
+  .mono {
+    font-family: var(--garra-mono);
+  }
+}
+
+/* Never remove a focus ring outright — replace it. */
+:focus-visible {
+  outline: 2px solid var(--garra-accent);
+  outline-offset: 2px;
 }
