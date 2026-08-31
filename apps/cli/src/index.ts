@@ -303,15 +303,19 @@ program
       process.exit(1);
     }
 
-    const bindHost = options.lan ? '0.0.0.0' : options.host || '127.0.0.1';
+    // Node binds bare IPv6 literals (`::1`), URLs need them bracketed (`[::1]`).
+    const rawHost = options.lan ? '0.0.0.0' : options.host || '127.0.0.1';
+    const bindHost = rawHost.replace(/^\[(.*)\]$/, '$1');
+    const urlHost = bindHost.includes(':') ? `[${bindHost}]` : bindHost;
     await server.listen({ port, host: bindHost });
-    console.log(chalk.bold.green(`\n🚀 AgentDeck Web Deck running at http://${bindHost}:${port}`));
+    console.log(chalk.bold.green(`\n🚀 AgentDeck Web Deck running at http://${urlHost}:${port}`));
     console.log(chalk.cyan(`  📂 Web root: ${server.webRoot}`));
     console.log(chalk.green('  ✓ Web UI: ready'));
     console.log(chalk.green('  ✓ REST API: ready'));
     console.log(chalk.green('  ✓ WebSocket: ready'));
     if (options.token) {
       console.log(chalk.green('  🔒 Authentication: enabled (token required)'));
+      console.log(chalk.gray('     Web Deck: paste the token when prompted, or open the URL once with #token=<secret>'));
     }
   });
 
