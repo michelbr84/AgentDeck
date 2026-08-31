@@ -114,4 +114,15 @@ describe('validateModel', () => {
     const r = await validateModel(bindingFor('ollama', 'qwen3.5:2b'));
     expect(r.message).toContain('ollama pull qwen3.5:2b');
   });
+
+  it('refuses a non-http(s) Ollama baseUrl without fetching', async () => {
+    const spy = vi.fn(async () => new Response('{}', { status: 200 }));
+    vi.stubGlobal('fetch', spy);
+    for (const baseUrl of ['file:///etc/passwd', 'ftp://127.0.0.1/x', 'data:application/json,{}']) {
+      const r = await validateModel({ providerId: 'ollama', model: 'qwen3.5:2b', baseUrl });
+      expect(r.status).toBe('unknown');
+      expect(r.message).toMatch(/http/i);
+    }
+    expect(spy).not.toHaveBeenCalled();
+  });
 });
