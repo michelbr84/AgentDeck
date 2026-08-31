@@ -169,6 +169,11 @@ export type UserProfile = z.infer<typeof UserProfileSchema>;
 export const RoomModeSchema = z.enum(['mention', 'panel', 'debate', 'round_robin', 'coordinator']);
 export type RoomMode = z.infer<typeof RoomModeSchema>;
 
+/** Structured role of one turn inside a debate run (persisted in the
+ * message's rawPayload as { debateRole }). */
+export const DebateRoleSchema = z.enum(['proposer', 'critique', 'synthesis']);
+export type DebateRole = z.infer<typeof DebateRoleSchema>;
+
 export const RoomSchema = z.object({
   id: IdSchema,
   name: z.string().min(1),

@@ -474,7 +474,12 @@ describe('AgentDeck Full Runtime & E2E Acceptance Suite', () => {
       senderDisplayName: 'Tester',
     });
     expect(resDebate.status).toBe('completed');
-    expect(resDebate.turnsExecuted).toBe(4);
+    // Structured roles: proposer (Bot1) + critique (Bot2) + synthesis (Bot1).
+    expect(resDebate.turnsExecuted).toBe(3);
+    const debateRoles = resDebate.messages
+      .map((m) => (m.rawPayload as { debateRole?: string } | undefined)?.debateRole)
+      .filter(Boolean);
+    expect(debateRoles).toEqual(['proposer', 'critique', 'synthesis']);
 
     // Test AbortController Guardrail
     const abortCtrl = new AbortController();

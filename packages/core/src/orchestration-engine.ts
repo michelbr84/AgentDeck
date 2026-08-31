@@ -7,8 +7,14 @@ import {
   AgentInstallation,
   ChatDeliveryTrace,
 } from '@agentdeck/protocol';
-import { DEFAULT_INTEROP_LIMITS } from './interop-guardrails.js';
+import { DEFAULT_INTEROP_LIMITS, capFanOut } from './interop-guardrails.js';
 import { RunAbortError, TurnTimeoutError, RunBudget } from './run-control.js';
+import {
+  runWithConcurrency,
+  parseCoordinatorPlan,
+  matchSpecialist,
+  DEFAULT_MAX_TURN_CONCURRENCY,
+} from './run-helpers.js';
 
 export interface OrchestrationRunOptions {
   roomId: string;
@@ -42,6 +48,23 @@ interface ResolvedRouting {
   shouldExecute: boolean;
   systemFeedbackMessage?: string;
 }
+
+type RoomInstance = AgentInstance & { persona: Persona; installation: AgentInstallation };
+
+/** Per-turn extras threaded into prompt composition and message persistence. */
+interface TurnExtras {
+  turnDirective?: string;
+  rawPayload?: Record<string, unknown>;
+}
+
+const DEBATE_DIRECTIVES = {
+  proposer:
+    'Debate Role: PROPOSER. Present a clear initial proposal answering the request, with your strongest reasoning.',
+  critique:
+    'Debate Role: CRITIQUE. Challenge the previous proposal: find flaws, risks and blind spots, and suggest concrete improvements.',
+  synthesis:
+    'Debate Role: SYNTHESIS. Reconcile the proposal and critiques above into one final, balanced answer.',
+} as const;
 
 /** Live token chunks are coalesced behind this flush interval — every emitted
  * envelope costs a redactSecrets deep clone plus one JSON.stringify per
@@ -433,21 +456,83 @@ export class MultiAgentOrchestrationEngine {
             }
           }
         } else if (effectiveRoom.mode === 'panel') {
+          // Concurrent fan-out through a bounded lane pool. turnIndex is
+          // pre-assigned per target so persistence and traces stay stable
+          // even when completions land out of order; each turn answers the
+          // user from the same history snapshot, not each other.
+          const targets: RoomInstance[] = [];
           for (const inst of routing.targetInstances) {
+            if (!budget.check().allowed) break;
+            budget.noteTurn();
+            targets.push(inst);
+          }
+          const historySnapshot = [...producedMessages];
+          const settled = await runWithConcurrency(
+            targets.length,
+            Math.min(targets.length, DEFAULT_MAX_TURN_CONCURRENCY),
+            (index) => {
+              if (runSignal.aborted) return Promise.resolve(null);
+              return this.executeSingleTurn(
+                runId,
+                effectiveRoom,
+                targets[index]!,
+                options.triggerMessage,
+                historySnapshot,
+                index + 1,
+                options,
+                runSignal
+              );
+            }
+          );
+          turnsExecuted += targets.length;
+          for (const msg of settled) {
+            if (msg) {
+              producedMessages.push(msg);
+              totalTokens += 150;
+              totalCost += 0.0005;
+              budget.noteCost(0.0005);
+            }
+          }
+        } else if (effectiveRoom.mode === 'debate') {
+          // Structured debate roles per docs/group-chat-modes.md: the lead
+          // proposes, every other member critiques, the lead synthesizes.
+          // A single-agent room walks all three phases itself.
+          const members = routing.targetInstances;
+          const lead =
+            (effectiveRoom.defaultAgentInstanceId &&
+              members.find((i) => i.id === effectiveRoom.defaultAgentInstanceId)) ||
+            members[0]!;
+          const critics = members.filter((i) => i.id !== lead.id);
+
+          const plan: Array<{ instance: RoomInstance; role: keyof typeof DEBATE_DIRECTIVES }> = [
+            { instance: lead, role: 'proposer' },
+            ...(critics.length > 0
+              ? critics.map((c) => ({ instance: c, role: 'critique' as const }))
+              : [{ instance: lead, role: 'critique' as const }]),
+            { instance: lead, role: 'synthesis' },
+          ];
+
+          for (const step of plan) {
             if (runSignal.aborted) break;
             if (!budget.check().allowed) break;
 
             turnsExecuted++;
             budget.noteTurn();
+            const latestContext =
+              producedMessages[producedMessages.length - 1]?.content || options.triggerMessage;
             const msg = await this.executeSingleTurn(
               runId,
               effectiveRoom,
-              inst,
-              options.triggerMessage,
+              step.instance,
+              latestContext,
               producedMessages,
               turnsExecuted,
               options,
-              runSignal
+              runSignal,
+              {
+                turnDirective: DEBATE_DIRECTIVES[step.role],
+                rawPayload: { debateRole: step.role },
+              }
             );
             if (msg) {
               producedMessages.push(msg);
@@ -456,7 +541,7 @@ export class MultiAgentOrchestrationEngine {
               budget.noteCost(0.0005);
             }
           }
-        } else if (effectiveRoom.mode === 'debate' || effectiveRoom.mode === 'round_robin') {
+        } else if (effectiveRoom.mode === 'round_robin') {
           for (let t = 0; t < Math.min(maxTurns, routing.targetInstances.length * 2); t++) {
             if (runSignal.aborted) break;
             if (!budget.check().allowed) break;
@@ -485,20 +570,20 @@ export class MultiAgentOrchestrationEngine {
           }
         } else if (effectiveRoom.mode === 'coordinator') {
           const coordinator = routing.targetInstances[0];
-          if (coordinator && !runSignal.aborted && budget.check().allowed) {
-            turnsExecuted++;
-            budget.noteTurn();
-            const msg = await this.executeSingleTurn(
+          if (coordinator) {
+            const outcome = await this.runCoordinator(
               runId,
               effectiveRoom,
               coordinator,
-              `Analyze the following request and coordinate with specialist personas: ${options.triggerMessage}`,
+              activeRoomInstances,
               producedMessages,
-              turnsExecuted,
               options,
-              runSignal
+              runSignal,
+              budget
             );
-            if (msg) producedMessages.push(msg);
+            turnsExecuted += outcome.turns;
+            totalTokens += outcome.tokens;
+            totalCost += outcome.cost;
           }
         }
 
@@ -574,6 +659,130 @@ export class MultiAgentOrchestrationEngine {
     }
   }
 
+  /**
+   * Coordinator mode: PLAN (the lead breaks the request into subtasks against
+   * the member roster) → PARSE + DELEGATE (tolerant plan parsing, specialist
+   * matching, bounded concurrent delegation) → SYNTHESIS (the lead folds the
+   * specialists' answers into one reply). A room where the lead is the only
+   * member stops after the plan turn, which is asked to answer directly.
+   */
+  private async runCoordinator(
+    runId: string,
+    room: Room,
+    lead: RoomInstance,
+    allMembers: RoomInstance[],
+    producedMessages: Message[],
+    options: OrchestrationRunOptions,
+    runSignal: AbortSignal,
+    budget: RunBudget
+  ): Promise<{ turns: number; tokens: number; cost: number }> {
+    let turns = 0;
+    let tokens = 0;
+    let cost = 0;
+    const noteMessage = (msg: Message | null): void => {
+      if (!msg) return;
+      producedMessages.push(msg);
+      tokens += 150;
+      cost += 0.0005;
+      budget.noteCost(0.0005);
+    };
+
+    const specialists = allMembers.filter((i) => i.id !== lead.id);
+
+    // PLAN
+    if (runSignal.aborted || !budget.check().allowed) return { turns, tokens, cost };
+    turns++;
+    budget.noteTurn();
+    const roster = allMembers
+      .map((i) => `- ${i.name} (persona: ${i.persona.name}, role: ${i.persona.role})`)
+      .join('\n');
+    const planDirective =
+      specialists.length > 0
+        ? `Coordinator Phase: PLAN. Break the user's request into subtasks and assign each to the best-fitting team member below. Reply with a fenced JSON block shaped exactly like {"subtasks": [{"task": "...", "specialist": "<member name>"}]}. Team roster:\n${roster}`
+        : 'Coordinator Phase: PLAN. You are the only member of this room: analyze the request and answer it directly and completely.';
+    const planMsg = await this.executeSingleTurn(
+      runId,
+      room,
+      lead,
+      options.triggerMessage,
+      producedMessages,
+      turns,
+      options,
+      runSignal,
+      { turnDirective: planDirective, rawPayload: { coordinatorPhase: 'plan' } }
+    );
+    noteMessage(planMsg);
+
+    if (specialists.length === 0 || !planMsg) return { turns, tokens, cost };
+
+    // PARSE + DELEGATE
+    const subtasks = parseCoordinatorPlan(planMsg.content);
+    const { targets: boundedSubtasks, dropped } = capFanOut(subtasks);
+    this.manager.eventBus.emit(
+      'coordinator:plan',
+      { runId, roomId: room.id, subtasks: boundedSubtasks.length, dropped },
+      { runId, roomId: room.id, instanceId: lead.id }
+    );
+
+    let roundRobin = 0;
+    const assignments: Array<{ task: string; specialist: RoomInstance }> = [];
+    for (const sub of boundedSubtasks) {
+      if (!budget.check().allowed) break;
+      budget.noteTurn();
+      assignments.push({ task: sub.task, specialist: matchSpecialist(sub.specialist, specialists, roundRobin++) });
+    }
+
+    const historySnapshot = [...producedMessages];
+    const baseTurn = turns;
+    const settled = await runWithConcurrency(
+      assignments.length,
+      Math.min(assignments.length, DEFAULT_MAX_TURN_CONCURRENCY),
+      (index) => {
+        if (runSignal.aborted) return Promise.resolve(null);
+        const assignment = assignments[index]!;
+        return this.executeSingleTurn(
+          runId,
+          room,
+          assignment.specialist,
+          assignment.task,
+          historySnapshot,
+          baseTurn + index + 1,
+          options,
+          runSignal,
+          {
+            turnDirective: `Coordinator Phase: DELEGATE. The coordinator "${lead.name}" assigned you this subtask. Complete it directly and thoroughly.`,
+            rawPayload: { coordinatorPhase: 'delegate' },
+          }
+        );
+      }
+    );
+    turns += assignments.length;
+    for (const msg of settled) noteMessage(msg);
+
+    // SYNTHESIS
+    if (runSignal.aborted || !budget.check().allowed) return { turns, tokens, cost };
+    turns++;
+    budget.noteTurn();
+    const synthesisMsg = await this.executeSingleTurn(
+      runId,
+      room,
+      lead,
+      options.triggerMessage,
+      producedMessages,
+      turns,
+      options,
+      runSignal,
+      {
+        turnDirective:
+          "Coordinator Phase: SYNTHESIS. The conversation history contains your plan and the specialists' answers. Synthesize them into one final, complete answer for the user.",
+        rawPayload: { coordinatorPhase: 'synthesis' },
+      }
+    );
+    noteMessage(synthesisMsg);
+
+    return { turns, tokens, cost };
+  }
+
   private async executeSingleTurn(
     runId: string,
     room: Room,
@@ -582,7 +791,8 @@ export class MultiAgentOrchestrationEngine {
     history: Message[],
     turnIndex: number,
     options: OrchestrationRunOptions,
-    runSignal: AbortSignal
+    runSignal: AbortSignal,
+    extras?: TurnExtras
   ): Promise<Message | null> {
     const adapter = this.manager.getAdapter(instance.installation.definitionId);
     if (!adapter) return null;
@@ -596,6 +806,7 @@ export class MultiAgentOrchestrationEngine {
       globalPolicy: 'Deliver precise, actionable, clear, and production-grade software answers.',
       workspaceContext: room.workspacePath || process.cwd(),
       roomInstructions: `Room #${room.name} Mode: ${room.mode}. Turn ${turnIndex}.`,
+      turnDirective: extras?.turnDirective,
       history: history.slice(-10),
       triggerMessage: triggerText,
     });
@@ -686,6 +897,7 @@ export class MultiAgentOrchestrationEngine {
         content: rawContent,
         contentType: 'text',
         turnIndex,
+        rawPayload: extras?.rawPayload,
       });
 
       this.manager.eventBus.emit('run:turn:completed', { ...turnInfo, messageId: msg.id }, emitMeta);

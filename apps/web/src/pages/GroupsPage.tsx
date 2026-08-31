@@ -37,7 +37,7 @@ interface RoomMember {
 const MODE_HELP: Record<RoomMode, string> = {
   mention: 'Only the @mentioned agent answers. Falls back to the room default agent.',
   panel: 'Every member answers the same message, independently.',
-  debate: 'Agents take turns responding to each other.',
+  debate: 'Structured roles: proposer opens, members critique, the lead synthesizes.',
   round_robin: 'One agent per turn, cycling through the members in order.',
   coordinator: 'A lead agent delegates to the others and synthesises the result.',
 };

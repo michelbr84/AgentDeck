@@ -7,6 +7,8 @@ export interface PromptCompositionOptions {
   globalPolicy?: string;
   workspaceContext?: string;
   roomInstructions?: string;
+  /** Per-turn orchestration directive (debate role, coordinator phase, ...). */
+  turnDirective?: string;
   adapterInstructions?: string;
   history?: Message[];
   triggerMessage: string;
@@ -56,6 +58,19 @@ export class PromptComposer {
         source: 'Room Configuration',
         content: options.roomInstructions.trim(),
         tokenCount: { source: 'estimated', value: Math.ceil(options.roomInstructions.length / 4) },
+        redacted: false,
+      });
+    }
+
+    // 3.5 Turn Directive (orchestration-phase instructions, e.g. debate role)
+    if (options.turnDirective) {
+      layers.push({
+        id: `layer-${order}`,
+        order: order++,
+        layerName: 'Turn Directive',
+        source: 'Orchestration Engine',
+        content: options.turnDirective.trim(),
+        tokenCount: { source: 'estimated', value: Math.ceil(options.turnDirective.length / 4) },
         redacted: false,
       });
     }

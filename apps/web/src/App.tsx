@@ -1050,7 +1050,7 @@ export default function App() {
                           </p>
                         )}
                         {currentRoom.mode === 'panel' && <p>Broadcasts every message to all room members.</p>}
-                        {currentRoom.mode === 'debate' && <p>Sequential debate across all active room members.</p>}
+                        {currentRoom.mode === 'debate' && <p>Structured debate: the lead proposes, the other members critique, the lead synthesizes.</p>}
                       </div>
                     </div>
                   )}
