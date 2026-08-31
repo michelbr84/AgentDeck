@@ -22,9 +22,11 @@ import {
   Check,
   Zap,
   Users,
+  KeyRound,
 } from 'lucide-react';
 import { WEB_APP_VERSION } from './version';
-import { apiFetch } from './api';
+import { apiFetch, tokenStore } from './api';
+import { AUTH_REQUIRED_EVENT } from './auth';
 import { AgentControlPage } from './pages/AgentControlPage';
 import { GroupsPage } from './pages/GroupsPage';
 
@@ -175,11 +177,40 @@ export default function App() {
     memberInstanceIds: [],
   });
 
+  // `agentdeck web --token`: prompt for the secret when the daemon answers 401.
+  const [showAuthModal, setShowAuthModal] = useState(false);
+  const [authTokenInput, setAuthTokenInput] = useState('');
+  const [authError, setAuthError] = useState<string | null>(null);
+  const [authEpoch, setAuthEpoch] = useState(0);
+
   useEffect(() => {
+    // The one-shot ?token= / #token= sign-in is applied when api.ts is
+    // evaluated (see adoptTokenFromLocation), i.e. before this or any child
+    // page effect can issue a request. Here we only react to 401s.
+    const onAuthRequired = () => {
+      // A stored token that still gets 401 is simply wrong; say so.
+      if (tokenStore.get()) setAuthError('The daemon rejected that token. Check the value and try again.');
+      setShowAuthModal(true);
+    };
+    window.addEventListener(AUTH_REQUIRED_EVENT, onAuthRequired);
     fetchInitialData();
+    return () => window.removeEventListener(AUTH_REQUIRED_EVENT, onAuthRequired);
   }, []);
 
-  const showToast = (type: 'success' | 'error' | 'info', message: string) => {
+  const handleUnlock = (e: React.FormEvent) => {
+    e.preventDefault();
+    const token = authTokenInput.trim();
+    if (!token) return;
+    tokenStore.set(token);
+    setAuthTokenInput('');
+    setAuthError(null);
+    setShowAuthModal(false);
+    // Remount the page components so their own initial loads run again.
+    setAuthEpoch((n) => n + 1);
+    fetchInitialData();
+  };
+
+  const showToast =(type: 'success' | 'error' | 'info', message: string) => {
     setStatusNotification({ type, message });
     setTimeout(() => setStatusNotification(null), 4000);
   };
@@ -653,8 +684,8 @@ export default function App() {
         {/* Tab Views */}
         <div className="flex-1 overflow-y-auto p-6">
           {/* 1. DASHBOARD */}
-          {activeTab === 'control' && <AgentControlPage notify={(type, message) => setStatusNotification({ type, message })} />}
-          {activeTab === 'groups' && <GroupsPage notify={(type, message) => setStatusNotification({ type, message })} />}
+          {activeTab === 'control' && <AgentControlPage key={authEpoch} notify={(type, message) => setStatusNotification({ type, message })} />}
+          {activeTab === 'groups' && <GroupsPage key={authEpoch} notify={(type, message) => setStatusNotification({ type, message })} />}
 
           {activeTab === 'dashboard' && (
             <div className="space-y-6 max-w-6xl">
@@ -1111,6 +1142,61 @@ export default function App() {
           )}
         </div>
       </main>
+
+      {/* MODAL: AUTH TOKEN (daemon started with --token) */}
+      {showAuthModal && (
+        <div className="fixed inset-0 bg-black/70 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="auth-modal-title"
+            className="bg-slate-900 border border-slate-800 rounded-2xl w-full max-w-md p-6 space-y-4 shadow-2xl"
+          >
+            <div className="flex items-center gap-2 border-b border-slate-800 pb-3">
+              <KeyRound className="w-5 h-5 text-cyan-400" />
+              <h3 id="auth-modal-title" className="font-bold text-base text-slate-100">Authentication Required</h3>
+            </div>
+
+            <form onSubmit={handleUnlock} className="space-y-4 text-xs">
+              <p className="text-slate-400">
+                This Web Deck was started with <code className="font-mono text-cyan-300">--token</code>. Paste the token to continue.
+              </p>
+
+              <div>
+                <label htmlFor="authToken" className="block text-slate-400 mb-1 font-semibold">Access Token</label>
+                <input
+                  id="authToken"
+                  type="password"
+                  autoFocus
+                  autoComplete="off"
+                  spellCheck={false}
+                  value={authTokenInput}
+                  onChange={(e) => setAuthTokenInput(e.target.value)}
+                  placeholder="Paste the --token secret"
+                  className="w-full bg-slate-950 border border-slate-800 rounded-lg p-2 text-slate-100 font-mono focus:outline-none focus:border-cyan-500"
+                />
+              </div>
+
+              {authError && (
+                <div className="flex items-start gap-2 text-rose-200 bg-rose-950/40 border border-rose-800/50 rounded-lg p-2.5" role="alert">
+                  <AlertTriangle className="w-3.5 h-3.5 mt-0.5 shrink-0 text-rose-400" />
+                  <span>{authError}</span>
+                </div>
+              )}
+
+              <div className="flex justify-end pt-2 border-t border-slate-800">
+                <button
+                  type="submit"
+                  disabled={!authTokenInput.trim()}
+                  className="px-4 py-2 bg-cyan-600 hover:bg-cyan-500 disabled:bg-slate-700 disabled:text-slate-500 rounded-lg text-white font-semibold"
+                >
+                  Unlock
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
 
       {/* MODAL: PERSONA CREATE / EDIT */}
       {showPersonaModal && (
