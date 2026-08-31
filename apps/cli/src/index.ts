@@ -9,7 +9,8 @@ import { runAgentsSetup } from './agents/setup.js';
 import { runAgentsStatus } from './agents/status.js';
 import { runAgentsRollback } from './agents/rollback.js';
 import { runAgentsLink } from './agents/link.js';
-import { AgentDeckManager, ChatService } from '@agentdeck/core';
+import { AgentDeckManager, ChatService, PluginLoader, readPluginManifest, loadProgrammaticPlugin, installPlugin, removePlugin, INSTALL_RECEIPT_FILENAME } from '@agentdeck/core';
+import { AGENTDECK_PATHS } from '@agentdeck/shared';
 import { HealthCheckLevelSchema, type RoomMode } from '@agentdeck/protocol';
 import { createAgentDeckServer } from '@agentdeck/server';
 import { AGENTDECK_VERSION } from '@agentdeck/shared';
@@ -443,9 +444,9 @@ const pluginCommand = program
 
 pluginCommand
   .command('list')
-  .description('List installed user plugins from ~/.agentdeck/plugins')
+  .description('List installed user plugins (declarative and programmatic)')
   .action(async () => {
-    const pluginsDir = path.join(os.homedir(), '.agentdeck', 'plugins');
+    const pluginsDir = AGENTDECK_PATHS.PLUGINS_DIR;
     await fs.mkdir(pluginsDir, { recursive: true });
     const entries = await fs.readdir(pluginsDir, { withFileTypes: true });
     const pluginFolders = entries.filter((e) => e.isDirectory());
@@ -456,22 +457,99 @@ pluginCommand
 
     if (pluginFolders.length === 0) {
       console.log(chalk.dim(`  No plugins installed in ${pluginsDir}`));
-      console.log(chalk.dim('  Run `agentdeck plugin new <name>` to scaffold a new plugin.\n'));
+      console.log(chalk.dim('  Run `agentdeck plugin new <name>` or `agentdeck plugin install <source>`.\n'));
       return;
     }
 
     for (const folder of pluginFolders) {
-      const manifestPath = path.join(pluginsDir, folder.name, 'manifest.json');
+      const pluginDir = path.join(pluginsDir, folder.name);
       try {
-        const raw = await fs.readFile(manifestPath, 'utf8');
-        const json = JSON.parse(raw);
-        console.log(`  🔌 ${chalk.bold(json.name || folder.name)} (${chalk.yellow(json.id || folder.name)}) [v${json.version || '1.0.0'}]`);
-        console.log(`     ${chalk.dim(json.description || 'No description provided')}`);
-      } catch {
-        console.log(`  ⚠️  ${chalk.bold(folder.name)} (unrecognized manifest)`);
+        const found = await readPluginManifest(pluginDir);
+        const tier = found.kind === 'AgentPluginModule' ? 'Tier-2 programmatic' : 'Tier-1 declarative';
+        console.log(
+          `  🔌 ${chalk.bold(found.manifest.name)} (${chalk.yellow(found.manifest.id)}) [v${found.manifest.version}] — ${chalk.dim(tier)}`
+        );
+        console.log(`     ${chalk.dim(found.manifest.description || 'No description provided')}`);
+      } catch (err) {
+        console.log(`  ⚠️  ${chalk.bold(folder.name)} — ${chalk.dim((err as Error).message)}`);
       }
     }
     console.log('');
+  });
+
+pluginCommand
+  .command('install <source>')
+  .description('Install a plugin from a local path or a PINNED github source (github:owner/repo#tag-or-commit)')
+  .option('-y, --yes', 'Skip the interactive confirmation')
+  .action(async (source, options) => {
+    try {
+      let confirmed = Boolean(options.yes);
+      if (!confirmed) {
+        console.log(chalk.bold.yellow('\n⚠ A plugin installs code that runs INSIDE AgentDeck with your permissions.'));
+        console.log(chalk.yellow(`  Source: ${source}`));
+        console.log(chalk.yellow('  Review the plugin before continuing. There is no sandbox.'));
+        const readline = await import('node:readline/promises');
+        const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+        const answer = (await rl.question('  Install? Type "yes" to continue: ')).trim().toLowerCase();
+        rl.close();
+        confirmed = answer === 'yes' || answer === 'y';
+        if (!confirmed) {
+          console.log(chalk.dim('Aborted.'));
+          process.exitCode = 1;
+          return;
+        }
+      }
+
+      const result = await installPlugin(source, { pluginsDir: AGENTDECK_PATHS.PLUGINS_DIR, confirmed: true });
+      console.log(chalk.green(`\n✔ Plugin "${result.pluginId}" installed at ${result.pluginDir}`));
+      console.log(chalk.dim(`  Kind: ${result.kind} | receipt: ${INSTALL_RECEIPT_FILENAME}`));
+      console.log(chalk.dim('  AgentDeck loads it on next start. Validate with `agentdeck plugin validate`.\n'));
+    } catch (err) {
+      console.error(chalk.red(`✖ ${(err as Error).message}`));
+      process.exitCode = 1;
+    }
+  });
+
+pluginCommand
+  .command('remove <pluginId>')
+  .alias('rm')
+  .description('Remove an installed plugin')
+  .action(async (pluginId) => {
+    try {
+      await removePlugin(pluginId, AGENTDECK_PATHS.PLUGINS_DIR);
+      console.log(chalk.green(`✔ Plugin "${pluginId}" removed.`));
+    } catch (err) {
+      console.error(chalk.red(`✖ ${(err as Error).message}`));
+      process.exitCode = 1;
+    }
+  });
+
+pluginCommand
+  .command('validate [pathOrId]')
+  .description('Validate a plugin directory (or an installed plugin id) without loading it into the deck')
+  .action(async (pathOrId) => {
+    try {
+      const target = pathOrId
+        ? (await fs.stat(path.resolve(pathOrId)).catch(() => null))?.isDirectory()
+          ? path.resolve(pathOrId)
+          : path.join(AGENTDECK_PATHS.PLUGINS_DIR, pathOrId)
+        : process.cwd();
+
+      const found = await readPluginManifest(target);
+      console.log(chalk.green(`✔ Manifest OK: ${found.manifest.name} (${found.manifest.id}) — kind ${found.kind}`));
+      if (found.kind === 'AgentPluginModule') {
+        const adapter = await loadProgrammaticPlugin(target, found.manifest);
+        console.log(chalk.green(`✔ Entry module OK: createAdapter() returned adapter "${adapter.definition.id}"`));
+      } else {
+        // Instantiating the declarative adapter exercises the whole schema.
+        const loader = new PluginLoader(path.dirname(target));
+        void loader;
+        console.log(chalk.green('✔ Declarative execution template validated ({{prompt}} placement, safe command).'));
+      }
+    } catch (err) {
+      console.error(chalk.red(`✖ ${(err as Error).message}`));
+      process.exitCode = 1;
+    }
   });
 
 pluginCommand

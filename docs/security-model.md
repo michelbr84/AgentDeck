@@ -38,6 +38,14 @@ AgentDeck never overwrites or corrupts native agent configuration files (`.claud
 
 ---
 
+## 3.5 Plugin Trust Model
+
+Plugins extend AgentDeck with new agent adapters, in two tiers:
+- **Tier-1 declarative** manifests describe CLI invocations only; the schema rejects shell metacharacters in commands and forces the prompt through opaque-content argument passing (`shell: false`).
+- **Tier-2 programmatic** plugins are dynamically imported JavaScript running **in-process with your permissions — there is no sandbox**. Mitigations: `plugin install` requires explicit confirmation; `github:` sources must pin a tag or commit (moving branches are refused, so what you reviewed is what you run); every install writes a `.agentdeck-install.json` receipt with the exact source and ref; plugin loading is isolated per plugin so a broken one cannot take the deck down; and installation is CLI-only by design — there is deliberately no REST endpoint that installs code. Checksums/signatures and sandboxing are planned hardening.
+
+---
+
 ## 4. Subprocess Execution Safety
 
 - All agent binaries are executed with `shell: false` to prevent shell injection vulnerabilities.

@@ -42,6 +42,12 @@ Lists every room (mode + limits) or deletes one — messages, members, and run h
 ### `agentdeck plugin list`
 Lists all user-installed declarative and programmatic plugins found in `~/.agentdeck/plugins`.
 
+### `agentdeck plugin install <source> [--yes]`
+Installs a plugin from a local directory or a **pinned** GitHub source (`github:owner/repo#tag-or-commit`). Asks for confirmation — plugin code runs inside AgentDeck with your permissions — and records an install receipt. Unpinned branch installs are refused.
+
+### `agentdeck plugin remove <pluginId>` / `agentdeck plugin validate [pathOrId]`
+Removes an installed plugin, or validates a plugin directory (manifest schema, prompt-template safety, and — for Tier-2 — that the entry module's `createAdapter(sdk)` factory returns a working adapter).
+
 ### `agentdeck plugin new <pluginId>`
 Scaffolds a new declarative plugin manifest at `~/.agentdeck/plugins/<pluginId>/manifest.json`.
 
