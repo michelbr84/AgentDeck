@@ -2,8 +2,9 @@
  * Applies one LLM routing across every managed agent.
  *
  * The whole point of the feature: the user picks a provider+model pair once,
- * and all four agents end up pointing at it. Per-agent overrides exist but are
- * deliberately not the default path.
+ * and all four agents end up pointing at it. Per-agent overrides exist
+ * (`ApplyOptions.overrides`) but are deliberately not the default path, and
+ * they ride the same run: one backup dir, one dry-run gate, one manifest.
  *
  * The apply is two-phase and does NOT auto-revert partial success. See
  * `applyToAgents` for why.
@@ -29,7 +30,14 @@ export interface AgentApplyOutcome {
 export interface ApplyRunReport {
   runId: string;
   backupDir: string;
+  /** The deck routing — what every agent got unless it appears in `overrides`. */
   routing: LlmRouting;
+  /**
+   * Per-agent routings that were actually used, keyed by agent id. Only ids
+   * naming a selected, configurable agent survive; the rest are dropped so the
+   * report never claims an override nobody received.
+   */
+  overrides: Record<string, LlmRouting>;
   outcomes: AgentApplyOutcome[];
   /** True when at least one agent applied and at least one failed. */
   partial: boolean;
@@ -50,6 +58,12 @@ export interface ApplyOptions {
   force?: boolean;
   /** Stable id for the backup directory. Callers pass a timestamp. */
   runId: string;
+  /**
+   * Per-agent routings, keyed by adapter definition id. A listed agent gets
+   * that routing instead of `routing`; ids matching no selected agent are
+   * ignored. Overrides share the run's backup dir and manifest.
+   */
+  overrides?: Record<string, LlmRouting>;
   onProgress?: (agentId: string, stage: string) => void;
 }
 
@@ -124,7 +138,9 @@ export class RoutingService {
   }
 
   /**
-   * Applies `routing` to each adapter.
+   * Applies `routing` to each adapter — or, for agents named in
+   * `opts.overrides`, their own routing. Everything else about the run is
+   * shared: one backup dir, one dry-run gate, one manifest.
    *
    * Three phases, in order:
    *   1. Back up every selected agent's config. Abort the whole run if any
@@ -160,6 +176,16 @@ export class RoutingService {
 
     const resolveSecret = (ref: string): Promise<string | null> => this.secrets.resolve(ref);
 
+    // Keep only the overrides that name an agent in this run, so neither the
+    // report nor the manifest mentions a routing nobody received.
+    const overrides: Record<string, LlmRouting> = {};
+    for (const adapter of configurable) {
+      const own = opts.overrides?.[adapter.definition.id];
+      if (own) overrides[adapter.definition.id] = own;
+    }
+    const routingFor = (adapter: AgentAdapter): LlmRouting =>
+      overrides[adapter.definition.id] ?? routing;
+
     // Phase 1 — back up everything before touching anything.
     const backups = new Map<string, BackupResult>();
     if (!opts.dryRun) {
@@ -185,7 +211,7 @@ export class RoutingService {
     if (!opts.dryRun) {
       for (const adapter of configurable) {
         try {
-          await adapter.applyLlmConfig(routing, {
+          await adapter.applyLlmConfig(routingFor(adapter), {
             dryRun: true,
             force: opts.force ?? false,
             resolveSecret,
@@ -203,7 +229,7 @@ export class RoutingService {
     for (const adapter of configurable) {
       const base = { agentId: adapter.definition.id, agentName: adapter.definition.name };
       try {
-        const result = await adapter.applyLlmConfig(routing, {
+        const result = await adapter.applyLlmConfig(routingFor(adapter), {
           dryRun: opts.dryRun ?? false,
           force: opts.force ?? false,
           resolveSecret,
@@ -229,7 +255,14 @@ export class RoutingService {
             runId: opts.runId,
             createdAt: new Date().toISOString(),
             routing,
-            agents: [...backups.entries()].map(([id, b]) => ({ id, backup: b })),
+            overrides,
+            // Per agent, the routing it was actually given — so a run can be
+            // read back without re-deriving who overrode what.
+            agents: [...backups.entries()].map(([id, b]) => ({
+              id,
+              backup: b,
+              routing: overrides[id] ?? routing,
+            })),
           },
           null,
           2
@@ -240,7 +273,7 @@ export class RoutingService {
 
     const applied = outcomes.some((o) => o.status === 'applied');
     const failed = outcomes.some((o) => o.status === 'failed');
-    return { runId: opts.runId, backupDir, routing, outcomes, partial: applied && failed };
+    return { runId: opts.runId, backupDir, routing, overrides, outcomes, partial: applied && failed };
   }
 
   /** Lists runs that can be rolled back, newest first. */
