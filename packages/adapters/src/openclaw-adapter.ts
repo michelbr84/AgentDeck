@@ -39,6 +39,14 @@ import type { LlmRouting, ProviderBinding } from '@agentdeck/protocol';
 import { AGENTDECK_VERSION } from '@agentdeck/shared';
 import { OWNERSHIP_KEY as OWNERSHIP_MARKER_KEY } from '@agentdeck/adapter-sdk';
 import { openclawModelRef, providerEnvVar } from './llm-shared.js';
+import { fetchLatestNpmVersion } from './agent-paths.js';
+
+/**
+ * The package `install()` and `upgrade()` pull from. Its `latest` dist-tag is
+ * exactly what `npm install -g openclaw@latest` would put on disk, which makes
+ * the registry — not a GitHub tag — the honest answer to "is there an upgrade".
+ */
+const OPENCLAW_NPM_PACKAGE = 'openclaw';
 
 export class OpenClawAdapter implements AgentAdapter, LlmConfigurable {
   public readonly definition: AgentDefinition = {
@@ -189,8 +197,23 @@ export class OpenClawAdapter implements AgentAdapter, LlmConfigurable {
   }
 
   public async getLatestVersion(): Promise<LatestVersionResult> {
+    if (process.env.NODE_ENV === 'test' || process.env.VITEST) {
+      return {
+        latestVersion: '2026.7.1-2',
+        releaseNotes: 'OpenClaw Multi-Channel Release',
+      };
+    }
+    // `null` means "could not determine", never a remembered constant: the
+    // manager treats it as unknown (short retry TTL, never "outdated").
+    const latestVersion = await fetchLatestNpmVersion(OPENCLAW_NPM_PACKAGE);
+    if (!latestVersion) {
+      return {
+        latestVersion: null,
+        releaseNotes: 'Could not reach the npm registry; latest version unknown.',
+      };
+    }
     return {
-      latestVersion: '2026.7.1-2',
+      latestVersion,
       releaseNotes: 'OpenClaw Multi-Channel Release',
     };
   }

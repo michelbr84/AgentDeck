@@ -38,6 +38,7 @@ import {
 } from '@agentdeck/adapter-sdk';
 import type { LlmRouting, ProviderBinding } from '@agentdeck/protocol';
 import { AGENTDECK_VERSION } from '@agentdeck/shared';
+import { fetchLatestNpmVersion } from './agent-paths.js';
 
 /**
  * Where Claude Code is pointed when AgentDeck manages its routing.
@@ -199,18 +200,20 @@ export class ClaudeCodeAdapter implements AgentAdapter, LlmConfigurable {
         releaseNotes: 'Official Claude Code CLI release via npm registry',
       };
     }
-    try {
-      const res = await executeSafeCommand({ command: 'npm', args: ['view', '@anthropic-ai/claude-code', 'version'] });
-      const ver = res.stdout.trim();
+    // `null` means "could not determine", never a remembered constant: the
+    // manager treats it as unknown (short retry TTL, never "outdated"), while a
+    // pinned value would show a stale "latest" and a false outdated/up-to-date.
+    const latestVersion = await fetchLatestNpmVersion('@anthropic-ai/claude-code');
+    if (!latestVersion) {
       return {
-        latestVersion: ver || '2.1.237',
-        releaseNotes: 'Official Claude Code CLI release via npm registry',
-      };
-    } catch {
-      return {
-        latestVersion: '2.1.237',
+        latestVersion: null,
+        releaseNotes: 'Could not reach the npm registry; latest version unknown.',
       };
     }
+    return {
+      latestVersion,
+      releaseNotes: 'Official Claude Code CLI release via npm registry',
+    };
   }
 
   public async checkHealth(level: HealthCheckLevel): Promise<HealthReport> {
