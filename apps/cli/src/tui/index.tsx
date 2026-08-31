@@ -532,7 +532,7 @@ export const TuiApp: React.FC<TuiOptions> = ({ initialView = 'dashboard', initia
           <Text bold>Shortcuts & CLI Commands:</Text>
           <Text>  agentdeck setup      - Run full interactive onboarding & upgrade check</Text>
           <Text>  agentdeck status     - Check status and health matrix for all agents</Text>
-          <Text>  agentdeck doctor     - Run Level 1/2 diagnostic health checks</Text>
+          <Text>  agentdeck doctor [agentId] - Run Level 1/2 diagnostic health checks</Text>
           <Text>  agentdeck tui        - Launch this terminal user interface</Text>
           <Text>  agentdeck web        - Launch the browser-based Web Deck on port 4321</Text>
         </Box>

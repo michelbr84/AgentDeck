@@ -63,8 +63,9 @@ agentdeck web --port 4321
 # Safely upgrade an agent with automatic backups
 agentdeck upgrade claude-code
 
-# Run health diagnostics
+# Run health diagnostics (all agents, or a single one)
 agentdeck doctor
+agentdeck doctor claude-code
 
 # Interactive terminal group chat
 agentdeck chat

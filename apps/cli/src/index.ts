@@ -10,7 +10,7 @@ import { runAgentsStatus } from './agents/status.js';
 import { runAgentsRollback } from './agents/rollback.js';
 import { runAgentsLink } from './agents/link.js';
 import { AgentDeckManager, ChatService } from '@agentdeck/core';
-import type { RoomMode } from '@agentdeck/protocol';
+import { HealthCheckLevelSchema, type RoomMode } from '@agentdeck/protocol';
 import { createAgentDeckServer, isLoopbackHost } from '@agentdeck/server';
 import { AGENTDECK_VERSION } from '@agentdeck/shared';
 
@@ -169,15 +169,38 @@ program
 
 // 5. DOCTOR / HEALTH CHECKS
 program
-  .command('doctor')
-  .description('Perform multi-level diagnostic health checks across all installed agents')
+  .command('doctor [agentId]')
+  .description('Perform multi-level diagnostic health checks across all installed agents, or a single agent by id')
   .option('--level <level>', 'Health check level (level1_static | level2_connectivity | level3_active)', 'level1_static')
-  .action(async (options) => {
+  .action(async (agentId, options) => {
     const manager = await AgentDeckManager.create();
+
+    const parsedLevel = HealthCheckLevelSchema.safeParse(options.level);
+    if (!parsedLevel.success) {
+      console.error(
+        chalk.red(
+          `Invalid --level "${options.level}". Valid levels: ${HealthCheckLevelSchema.options.join(' | ')}`
+        )
+      );
+      process.exitCode = 1;
+      return;
+    }
+
+    const adapters = agentId
+      ? [manager.getAdapter(agentId)].filter(Boolean)
+      : manager.getAllAdapters();
+
+    if (adapters.length === 0) {
+      const validIds = manager.getAllAdapters().map((a) => a.definition.id).join(', ');
+      console.error(chalk.red(`No agent found matching "${agentId}". Valid agent ids: ${validIds}`));
+      process.exitCode = 1;
+      return;
+    }
+
     console.log(chalk.bold.blue(`\nRunning AgentDeck Diagnostics (${options.level})...\n`));
 
-    const adapters = manager.getAllAdapters();
     for (const adapter of adapters) {
+      if (!adapter) continue;
       console.log(chalk.bold(`Checking ${adapter.definition.name} (${adapter.definition.id})...`));
       const report = await manager.checkAgentHealth(adapter.definition.id, options.level);
 

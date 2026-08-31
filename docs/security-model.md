@@ -19,8 +19,10 @@ AgentDeck is built from the ground up for safe, defense-in-depth operation on de
 AgentDeck scans and redacts sensitive credentials before logging or transmitting messages over WebSockets:
 - Anthropic API Keys (`sk-ant-...`)
 - OpenAI API Keys (`sk-proj-...` / `sk-...`)
-- GitHub Tokens (`ghp_...`, `github_pat_...`)
-- Generic Bearer tokens, private keys, and passwords
+- GitHub Tokens (classic `ghp_`/`gho_`/... and fine-grained `github_pat_...`)
+- Slack tokens (`xoxb-...`) and JWT strings
+- PEM private-key blocks (`-----BEGIN ... PRIVATE KEY-----`)
+- Credential-bearing field names (`apiKey`, `authToken`, `password`, `clientSecret`, ...) — anchored patterns, so descriptive fields such as `authentication`, `tokensUsed`, or `secretsConfigured` stay readable (pinned by `packages/security/tests/redaction-precision.test.ts`)
 
 ---
 

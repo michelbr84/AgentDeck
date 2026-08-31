@@ -199,7 +199,9 @@ export async function createAgentDeckServer(options?: ServerOptions): Promise<Ag
   const activeSockets = new Set<WebSocket>();
 
   manager.eventBus.on('*', (envelope) => {
-    // Redact sensitive details before broadcasting over WebSocket
+    // Every event-bus envelope passes through redactSecrets before hitting the
+    // wire — new event payload field names must be checked against its
+    // SENSITIVE_KEY_PATTERNS list or they will be blanked here.
     const sanitizedEnvelope = redactSecrets(envelope);
     const messageStr = JSON.stringify(sanitizedEnvelope);
 
