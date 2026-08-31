@@ -142,8 +142,9 @@ export async function createAgentDeckServer(options?: ServerOptions): Promise<Ag
     });
   }
 
-  // Active connected websocket clients
+  // Active connected websocket clients, with optional per-socket room scoping
   const activeSockets = new Set<WebSocket>();
+  const socketRooms = new Map<WebSocket, string>();
 
   manager.eventBus.on('*', (envelope) => {
     // Every event-bus envelope passes through redactSecrets before hitting the
@@ -151,9 +152,18 @@ export async function createAgentDeckServer(options?: ServerOptions): Promise<Ag
     // SENSITIVE_KEY_PATTERNS list or they will be blanked here.
     const sanitizedEnvelope = redactSecrets(envelope);
     const messageStr = JSON.stringify(sanitizedEnvelope);
+    const envelopeRoomId =
+      (sanitizedEnvelope as { roomId?: string }).roomId ||
+      ((sanitizedEnvelope as { payload?: { message?: { roomId?: string } } }).payload?.message?.roomId ??
+        undefined);
 
     for (const socket of activeSockets) {
       if (socket.readyState === WebSocket.OPEN) {
+        // A socket that subscribed to a room only receives that room's events
+        // (run:chunk traffic would otherwise leak across every open deck).
+        // Events with no room context (agent upgrades, ...) go to everyone.
+        const subscribedRoom = socketRooms.get(socket);
+        if (subscribedRoom && envelopeRoomId && envelopeRoomId !== subscribedRoom) continue;
         try {
           socket.send(messageStr);
         } catch {
@@ -678,6 +688,7 @@ export async function createAgentDeckServer(options?: ServerOptions): Promise<Ag
 
     socket.on('close', () => {
       activeSockets.delete(socket);
+      socketRooms.delete(socket);
     });
 
     socket.on('message', async (rawMsg) => {
@@ -688,6 +699,12 @@ export async function createAgentDeckServer(options?: ServerOptions): Promise<Ag
         } else if (parsed.type === 'run:abort' && typeof parsed.runId === 'string') {
           const aborted = manager.abortRun(parsed.runId);
           socket.send(JSON.stringify({ type: 'run:abort:ack', runId: parsed.runId, aborted }));
+        } else if (parsed.type === 'subscribe' && typeof parsed.roomId === 'string') {
+          socketRooms.set(socket, parsed.roomId);
+          socket.send(JSON.stringify({ type: 'subscribe:ack', roomId: parsed.roomId }));
+        } else if (parsed.type === 'unsubscribe') {
+          socketRooms.delete(socket);
+          socket.send(JSON.stringify({ type: 'unsubscribe:ack' }));
         }
       } catch {
         // Invalid json

@@ -362,6 +362,70 @@ describe('AgentDeck Full Runtime & E2E Acceptance Suite', () => {
     ws.close();
   }, 15_000);
 
+  // 3c. Room-scoped WS subscriptions: a subscribed socket must not receive
+  // another room's run traffic (cross-room chunk leak).
+  it('3c. WS subscribe scopes run events to the subscribed room', async () => {
+    const authHeaders = {
+      Authorization: `Bearer ${TEST_TOKEN}`,
+      'Content-Type': 'application/json',
+    };
+
+    const installations = await manager.scanAndSyncInstallations();
+    const persona = await manager.createPersona({
+      name: 'Scoper',
+      role: 'Scoping Agent',
+      language: 'en-US',
+      systemPromptOverlay: 'stay in your room',
+      avatarEmoji: '🚪',
+      isTemplate: false,
+    });
+    const makeRoom = async (name: string) => {
+      const inst = await manager.createAgentInstance({
+        installationId: installations[0]!.id,
+        personaId: persona.id,
+        name: `${name}-bot`,
+      });
+      return manager.createRoom({ name, mode: 'mention', memberInstanceIds: [inst.id] });
+    };
+    const roomA = await makeRoom('scoped-a');
+    const roomB = await makeRoom('scoped-b');
+
+    const received: Array<{ type: string; roomId?: string }> = [];
+    const ws = new WebSocket(`ws://127.0.0.1:${TEST_PORT}/ws`);
+    await new Promise<void>((resolve, reject) => {
+      ws.on('open', () => {
+        ws.send(JSON.stringify({ type: 'subscribe', roomId: roomA.id }));
+        resolve();
+      });
+      ws.on('error', reject);
+    });
+    ws.on('message', (data) => {
+      try {
+        received.push(JSON.parse(data.toString()));
+      } catch {
+        // ignore
+      }
+    });
+
+    const runIn = (roomId: string) =>
+      fetch(`http://127.0.0.1:${TEST_PORT}/api/v1/rooms/${roomId}/run`, {
+        method: 'POST',
+        headers: authHeaders,
+        body: JSON.stringify({ prompt: 'scoped hello', userId: 'user-e2e', userName: 'E2E' }),
+      });
+
+    await runIn(roomB.id);
+    await runIn(roomA.id);
+    await new Promise((resolve) => setTimeout(resolve, 250));
+
+    const roomEvents = received.filter((e) => e.roomId);
+    expect(roomEvents.length).toBeGreaterThan(0);
+    expect(roomEvents.every((e) => e.roomId === roomA.id)).toBe(true);
+    expect(received.some((e) => e.type === 'run:chunk' && e.roomId === roomA.id)).toBe(true);
+
+    ws.close();
+  }, 15_000);
+
   // 4. Prompt Inspector Runtime Test & Secret Redaction
   it('4. Prompt Inspector Runtime Test (8-layer provenance & secret sanitization)', async () => {
     const installations = await manager.scanAndSyncInstallations();

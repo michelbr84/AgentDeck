@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
+import { useEventStream, StreamEnvelope } from './hooks/useEventStream';
 import {
   Bot,
   MessageSquare,
@@ -114,6 +115,8 @@ interface ChatDeliveryTrace {
 
 interface Message {
   id: string;
+  roomId?: string;
+  senderId?: string;
   senderDisplayName: string;
   senderType: string;
   content: string;
@@ -132,6 +135,8 @@ export default function App() {
   const [roomMembers, setRoomMembers] = useState<RoomMember[]>([]);
   const [messages, setMessages] = useState<Message[]>([]);
   const [isSending, setIsSending] = useState(false);
+  const [activeRunId, setActiveRunId] = useState<string | null>(null);
+  const [streamingTurns, setStreamingTurns] = useState<Record<string, { instanceName: string; text: string }>>({});
   const [olderCursor, setOlderCursor] = useState<string | null>(null);
   const [hasOlder, setHasOlder] = useState(false);
   const [loadingOlder, setLoadingOlder] = useState(false);
@@ -300,12 +305,84 @@ export default function App() {
   const handleStopRun = async () => {
     if (!currentRoom) return;
     try {
-      await fetch(`/api/v1/rooms/${currentRoom.id}/abort`, { method: 'POST' });
+      // Prefer the precise runId (learned from run:started over /ws); the
+      // room-scoped abort covers the window before that event arrives.
+      if (activeRunId) {
+        await fetch(`/api/v1/runs/${activeRunId}/abort`, { method: 'POST' });
+      } else {
+        await fetch(`/api/v1/rooms/${currentRoom.id}/abort`, { method: 'POST' });
+      }
     } catch (err) {
       console.error(err);
       showToast('error', 'Failed to stop the run');
     }
   };
+
+  // Live deck events for the room being viewed: token streaming, run
+  // lifecycle, and messages posted by other clients.
+  useEventStream(currentRoom?.id ?? null, (envelope: StreamEnvelope) => {
+    const roomMatches = !envelope.roomId || envelope.roomId === currentRoom?.id;
+    if (!roomMatches) return;
+
+    switch (envelope.type) {
+      case 'run:started': {
+        const runId = (envelope.payload as { runId?: string } | undefined)?.runId ?? envelope.runId;
+        if (runId) setActiveRunId(runId);
+        break;
+      }
+      case 'run:chunk': {
+        const p = envelope.payload as
+          | { instanceId?: string; instanceName?: string; text?: string }
+          | undefined;
+        if (!p?.instanceId || !p.text) break;
+        setStreamingTurns((prev) => ({
+          ...prev,
+          [p.instanceId!]: {
+            instanceName: p.instanceName ?? 'agent',
+            text: (prev[p.instanceId!]?.text ?? '') + p.text,
+          },
+        }));
+        break;
+      }
+      case 'message:created': {
+        const msg = (envelope.payload as { message?: Message } | undefined)?.message;
+        if (!msg || msg.roomId !== currentRoom?.id) break;
+        setMessages((prev) => (prev.some((m) => m.id === msg.id) ? prev : [...prev, msg]));
+        // The persisted message replaces the sender's ephemeral bubble.
+        const senderId = msg.senderId;
+        if (senderId) {
+          setStreamingTurns((prev) => {
+            if (!(senderId in prev)) return prev;
+            const next = { ...prev };
+            delete next[senderId];
+            return next;
+          });
+        }
+        break;
+      }
+      case 'run:turn:completed':
+      case 'run:turn:failed': {
+        const p = envelope.payload as { instanceId?: string } | undefined;
+        if (!p?.instanceId) break;
+        setStreamingTurns((prev) => {
+          if (!(p.instanceId! in prev)) return prev;
+          const next = { ...prev };
+          delete next[p.instanceId!];
+          return next;
+        });
+        break;
+      }
+      case 'run:completed':
+      case 'run:cancelled':
+      case 'run:failed': {
+        setActiveRunId(null);
+        setStreamingTurns({});
+        break;
+      }
+      default:
+        break;
+    }
+  });
 
   // Persona Management
   const openCreatePersona = () => {
@@ -1138,6 +1215,22 @@ export default function App() {
                       );
                     })
                   )}
+                  {/* Ephemeral live-stream bubbles: replaced by the persisted
+                      message as soon as message:created lands. */}
+                  {Object.entries(streamingTurns).map(([instanceId, turn]) => (
+                    <div key={`stream-${instanceId}`} className="space-y-1">
+                      <div className="flex items-center gap-2 text-xs text-slate-400">
+                        <span className="font-semibold text-cyan-400">{turn.instanceName}</span>
+                        <span className="text-[10px] px-1.5 py-0.2 rounded font-mono border bg-cyan-950 text-cyan-400 border-cyan-800 animate-pulse">
+                          streaming
+                        </span>
+                      </div>
+                      <div className="p-3 rounded-lg text-sm whitespace-pre-wrap border bg-slate-950 border-cyan-900/60 text-slate-300">
+                        {turn.text}
+                        <span className="animate-pulse">▍</span>
+                      </div>
+                    </div>
+                  ))}
                 </div>
 
                 {/* Input form */}
@@ -1153,7 +1246,7 @@ export default function App() {
                     }
                     className="flex-1 bg-slate-950 border border-slate-800 rounded-lg px-4 py-2.5 text-sm focus:outline-none focus:border-cyan-500 text-slate-100"
                   />
-                  {isSending ? (
+                  {(isSending || activeRunId !== null) ? (
                     <button
                       type="button"
                       onClick={handleStopRun}

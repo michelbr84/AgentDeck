@@ -1,7 +1,8 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { render, Box, Text, useInput, useApp } from 'ink';
+import { render, Box, Text, useInput, useApp, useStdout } from 'ink';
 import TextInput from 'ink-text-input';
 import { AgentDeckManager, ChatService, RunAbortError } from '@agentdeck/core';
+import { formatMessageLines, sliceViewport, maxScrollOffset } from './chat-viewport.js';
 import { AgentInstallation, AgentInstance, Room, Message, Persona } from '@agentdeck/protocol';
 import { AGENTDECK_VERSION } from '@agentdeck/shared';
 
@@ -31,6 +32,16 @@ export const TuiApp: React.FC<TuiOptions> = ({ initialView = 'dashboard', initia
   const [statusMessage, setStatusMessage] = useState('Welcome to AgentDeck Terminal Deck');
   const [isOrchestrating, setIsOrchestrating] = useState(false);
   const runAbortRef = useRef<AbortController | null>(null);
+
+  // Chat viewport: scrollOffset counts lines hidden below the window (0 =
+  // pinned to newest); live streaming text is buffered in a ref and flushed
+  // on an interval so Ink is not re-rendered per chunk.
+  const [scrollOffset, setScrollOffset] = useState(0);
+  const [liveStream, setLiveStream] = useState<Record<string, string>>({});
+  const liveStreamRef = useRef<Record<string, string>>({});
+  const chatScrollMaxRef = useRef(0);
+  const chatPageRef = useRef(8);
+  const { stdout } = useStdout();
 
   // Sub-navigation / selection indices inside management views
   const [selectedPersonaIndex, setSelectedPersonaIndex] = useState(0);
@@ -132,6 +143,34 @@ export const TuiApp: React.FC<TuiOptions> = ({ initialView = 'dashboard', initia
         setIsInputFocused(true);
         setStatusMessage('Chat input focused. Type message and press Enter. (ESC to unfocus)');
         return;
+      }
+
+      // Chat viewport scrolling (only in chat view, input unfocused)
+      if (view === 'chat') {
+        if (key.upArrow) {
+          setScrollOffset((p) => Math.min(chatScrollMaxRef.current, p + 1));
+          return;
+        }
+        if (key.downArrow) {
+          setScrollOffset((p) => Math.max(0, p - 1));
+          return;
+        }
+        if (key.pageUp) {
+          setScrollOffset((p) => Math.min(chatScrollMaxRef.current, p + chatPageRef.current));
+          return;
+        }
+        if (key.pageDown) {
+          setScrollOffset((p) => Math.max(0, p - chatPageRef.current));
+          return;
+        }
+        if (input === 'g') {
+          setScrollOffset(chatScrollMaxRef.current);
+          return;
+        }
+        if (input === 'G') {
+          setScrollOffset(0);
+          return;
+        }
       }
 
       // Portable Numeric Navigation: 1..7
@@ -251,7 +290,9 @@ export const TuiApp: React.FC<TuiOptions> = ({ initialView = 'dashboard', initia
         }
       }
     },
-    { isActive: process.stdin.isTTY }
+    // stdin.isTTY is `undefined` (not false) on pipes, and Ink treats a
+    // non-false isActive as active — which then throws on setRawMode.
+    { isActive: Boolean(process.stdin.isTTY) }
   );
 
   const handleFormSubmit = async () => {
@@ -274,6 +315,22 @@ export const TuiApp: React.FC<TuiOptions> = ({ initialView = 'dashboard', initia
     await refreshData(manager);
   };
 
+  // Flush streamed chunks to state at a bounded rate while orchestrating.
+  useEffect(() => {
+    if (!isOrchestrating) {
+      liveStreamRef.current = {};
+      setLiveStream({});
+      return;
+    }
+    const timer = setInterval(() => setLiveStream({ ...liveStreamRef.current }), 120);
+    return () => clearInterval(timer);
+  }, [isOrchestrating]);
+
+  // Re-pin the viewport to the newest line when switching rooms.
+  useEffect(() => {
+    setScrollOffset(0);
+  }, [currentRoom?.id]);
+
   const handleSendMessage = async () => {
     if (!chatInput.trim() || !manager || !currentRoom) return;
     const content = chatInput.trim();
@@ -281,6 +338,7 @@ export const TuiApp: React.FC<TuiOptions> = ({ initialView = 'dashboard', initia
     setIsInputFocused(false);
 
     setStatusMessage(`Sending prompt to #${currentRoom.name}... (ESC stops the run)`);
+    setScrollOffset(0);
     setIsOrchestrating(true);
     const abortController = new AbortController();
     runAbortRef.current = abortController;
@@ -293,6 +351,17 @@ export const TuiApp: React.FC<TuiOptions> = ({ initialView = 'dashboard', initia
           senderUserId: 'local-user',
           senderDisplayName: 'Michel (You)',
           abortSignal: abortController.signal,
+          onChunk: (instanceName, chunk) => {
+            liveStreamRef.current = {
+              ...liveStreamRef.current,
+              [instanceName]: (liveStreamRef.current[instanceName] ?? '') + chunk,
+            };
+          },
+          onTurnComplete: (instanceName) => {
+            const next = { ...liveStreamRef.current };
+            delete next[instanceName];
+            liveStreamRef.current = next;
+          },
         });
         setMessages(result.messages);
         const reason = result.deliveryTrace?.reasonCode || 'executed';
@@ -498,27 +567,70 @@ export const TuiApp: React.FC<TuiOptions> = ({ initialView = 'dashboard', initia
             </Text>
             <Text dimColor>Default Agent: {currentRoom?.defaultAgentInstanceId || 'none'}</Text>
           </Box>
-          <Box
-            flexDirection="column"
-            height={10}
-            borderStyle="single"
-            borderColor="gray"
-            padding={1}
-            marginBottom={1}
-          >
-            {messages.length === 0 ? (
-              <Text dimColor>No messages in this room yet. Press "i" to write a prompt!</Text>
-            ) : (
-              messages.map((m) => (
-                <Text key={m.id}>
-                  <Text bold color={m.senderType === 'user' ? 'cyan' : m.contentType === 'system' ? 'yellow' : 'green'}>
-                    [{m.senderDisplayName}]:
+          {(() => {
+            const termCols = stdout?.columns ?? 80;
+            const termRows = stdout?.rows ?? 24;
+            const chatWidth = Math.max(20, termCols - 10);
+            const chatHeight = Math.max(6, Math.min(termRows - 16, 40));
+
+            const senderColorByName = new Map<string, string>();
+            for (const m of messages) {
+              senderColorByName.set(
+                m.senderDisplayName,
+                m.senderType === 'user' ? 'cyan' : m.contentType === 'system' ? 'yellow' : 'green'
+              );
+            }
+
+            const lines = messages.flatMap((m) =>
+              formatMessageLines({ senderDisplayName: m.senderDisplayName, content: m.content }, chatWidth)
+            );
+            for (const [name, text] of Object.entries(liveStream)) {
+              if (text) {
+                senderColorByName.set(`${name} ⚡`, 'magenta');
+                lines.push(...formatMessageLines({ senderDisplayName: `${name} ⚡`, content: text }, chatWidth));
+              }
+            }
+
+            chatScrollMaxRef.current = maxScrollOffset(lines.length, chatHeight);
+            chatPageRef.current = Math.max(1, chatHeight - 1);
+            const slice = sliceViewport(lines, scrollOffset, chatHeight);
+
+            const renderChatLine = (line: string, key: number) => {
+              const match = line.match(/^\[(.+?)\]: /);
+              if (!match) return <Text key={key}>{line || ' '}</Text>;
+              const color = senderColorByName.get(match[1]!) || 'green';
+              return (
+                <Text key={key}>
+                  <Text bold color={color}>
+                    [{match[1]}]:
                   </Text>{' '}
-                  {m.content}
+                  {line.slice(match[0].length)}
                 </Text>
-              ))
-            )}
-          </Box>
+              );
+            };
+
+            return (
+              <Box
+                flexDirection="column"
+                borderStyle="single"
+                borderColor="gray"
+                paddingX={1}
+                marginBottom={1}
+              >
+                <Text dimColor>
+                  {slice.hiddenAbove > 0 ? `↑ ${slice.hiddenAbove} more line(s) — ↑/PgUp scrolls, g = top` : ' '}
+                </Text>
+                {lines.length === 0 ? (
+                  <Text dimColor>No messages in this room yet. Press "i" to write a prompt!</Text>
+                ) : (
+                  slice.visible.map((line, i) => renderChatLine(line, slice.hiddenAbove + i))
+                )}
+                <Text dimColor>
+                  {slice.hiddenBelow > 0 ? `↓ ${slice.hiddenBelow} more line(s) — ↓/PgDn scrolls, G = latest` : ' '}
+                </Text>
+              </Box>
+            );
+          })()}
           <Box>
             <Text bold color={isInputFocused ? 'green' : 'gray'}>
               Prompt {isInputFocused ? '[Typing >]' : '[Press "i" to type] >'}{' '}
