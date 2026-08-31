@@ -77,6 +77,10 @@ printf '%s\n' "$OPENROUTER_API_KEY" | agentdeck agents setup \
   --backup-provider ollama --backup-model qwen3.5:2b \
   --api-key-stdin --yes
 
+# Configure cada agente individualmente: mantenha o roteamento do deck ou escolha um primário próprio
+# para aquele agente (o backup do deck continua como fallback). Só em terminal interativo.
+agentdeck agents setup --per-agent
+
 # Mostrar o que está instalado e para onde cada agente aponta
 agentdeck agents status
 

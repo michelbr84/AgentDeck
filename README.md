@@ -77,6 +77,10 @@ printf '%s\n' "$OPENROUTER_API_KEY" | agentdeck agents setup \
   --backup-provider ollama --backup-model qwen3.5:2b \
   --api-key-stdin --yes
 
+# Configure each agent individually: keep the deck routing or pick that agent's own primary
+# (the deck backup stays as its fallback). Interactive only.
+agentdeck agents setup --per-agent
+
 # Show what is installed and where each agent currently points
 agentdeck agents status
 
