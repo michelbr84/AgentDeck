@@ -1,7 +1,17 @@
 [allowlist]
 description = "AgentDeck Gitleaks test fixture allowlist"
+# These files contain deliberately fake, obviously-patterned credentials
+# (sk-or-v1-aaaa…, sk-or-v1-abcdef…) used to prove that redaction, storage
+# permissions and API responses handle real ones correctly. Adding a file here
+# is only ever acceptable for fixtures whose values are not, and never were,
+# live secrets.
 paths = [
   '''packages/security/tests/security\.test\.ts''',
+  '''packages/security/tests/redaction-precision\.test\.ts''',
+  '''packages/security/tests/secret-store\.test\.ts''',
   '''packages/core/tests/prompt-composer\.test\.ts''',
+  '''packages/core/tests/routing-service\.test\.ts''',
   '''packages/server/tests/server\.test\.ts''',
+  '''packages/server/tests/llm-routing-api\.test\.ts''',
+  '''packages/adapters/tests/llm-configurable\.test\.ts''',
 ]

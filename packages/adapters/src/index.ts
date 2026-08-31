@@ -6,3 +6,5 @@ export * from './pi-adapter.js';
 export * from './kilo-adapter.js';
 export * from './cline-adapter.js';
 export * from './codex-adapter.js';
+export * from './agent-paths.js';
+export * from './llm-shared.js';

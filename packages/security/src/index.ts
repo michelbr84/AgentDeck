@@ -34,14 +34,33 @@ export async function writeSecureFile(filePath: string, content: string | Buffer
 // ==========================================
 // 2. REDACTION & SECRET FILTERING
 // ==========================================
+/**
+ * Key names whose *values* are redacted wholesale.
+ *
+ * These are deliberately anchored rather than bare substrings. The previous
+ * `/auth/i` matched `AgentInstallationState.authentication` and `/token/i`
+ * matched `ExecutionResult.tokensUsed`, so `GET /api/v1/agents` was returning
+ * `authentication: "[REDACTED_SECRET]"` and every usage figure was blanked —
+ * redacting our own non-secret telemetry while teaching nobody anything.
+ *
+ * Rule of thumb when adding a field: a name that *holds* a credential gets
+ * redacted; a name that merely *describes* one must not. Prefer naming new
+ * fields `credentialRef` / `credentialPresent` over `apiKey*` so they survive.
+ */
 const SENSITIVE_KEY_PATTERNS = [
   /api[_-]?key/i,
   /secret/i,
-  /token/i,
-  /auth/i,
   /password/i,
-  /credential/i,
+  /passphrase/i,
+  /credential$/i,
+  /credentials$/i,
   /private[_-]?key/i,
+  /^authorization$/i,
+  /auth[_-]?(token|key|header|secret)/i,
+  /^auth$/i,
+  /(access|refresh|bearer|api|auth|session|csrf)[_-]?token/i,
+  /^token$/i,
+  /^tokens$/i,
 ];
 
 const SECRET_VALUE_PATTERNS = [
@@ -151,3 +170,4 @@ export function isSafePathArgument(arg: string): boolean {
   return !dangerousChars.test(arg);
 }
 
+export * from './secret-store.js';

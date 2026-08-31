@@ -24,7 +24,7 @@ export async function apiFetch<T = unknown>(
   const res = await fetch(url, init);
   if (!res.ok) {
     const body = await safeJson<{ error?: string; message?: string }>(res);
-    const msg = body?.error || body?.message || `HTTP ${res.status}`;
+    const msg = body?.message || body?.error || `HTTP ${res.status}`;
     throw new Error(`API error: ${msg}`);
   }
   const data = await safeJson<T>(res);

@@ -158,6 +158,9 @@ importers:
       '@agentdeck/security':
         specifier: workspace:*
         version: link:../security
+      '@agentdeck/shared':
+        specifier: workspace:*
+        version: link:../shared
     devDependencies:
       '@types/node':
         specifier: ^22.13.0
@@ -183,6 +186,9 @@ importers:
       '@agentdeck/security':
         specifier: workspace:*
         version: link:../security
+      '@agentdeck/shared':
+        specifier: workspace:*
+        version: link:../shared
       zod:
         specifier: ^3.24.2
         version: 3.25.76

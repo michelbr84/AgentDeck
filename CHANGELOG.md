@@ -5,6 +5,21 @@ All notable changes to AgentDeck will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **LLM routing** (PR #15): curated provider catalog (`packages/core/src/provider-catalog.ts`), `RoutingService` with two-phase apply, config backup and rollback (`packages/core/src/routing-service.ts`), per-provider secret store (`packages/security/src/secret-store.ts`), and the `LlmConfigurable` adapter contract with merge-based config writing that preserves user settings (`packages/adapter-sdk`). Implemented by the Claude Code, Hermes, OpenClaw, and GarraIA adapters.
+- **Agent CLI**: `agentdeck agents setup|status|rollback|link` and `agentdeck mcp-server` (agent-to-agent interop over MCP + Rooms, guarded by rate limiting and cycle detection in `packages/core/src/interop-guardrails.ts`).
+- **Web Deck**: Agent Control page (install status, primary/backup routing, API keys, apply/dry-run) and Groups builder page.
+- **REST**: `GET /api/v1/agents/llm`, `GET|PUT /api/v1/llm-routing`, `POST /api/v1/llm-routing/apply`, `GET|PUT /api/v1/instances/:id/llm-override`, `GET /api/v1/secrets/status`, `PUT /api/v1/secrets/:provider`, `POST /api/v1/providers/test`, `GET /api/v1/providers/catalog`, `POST /api/v1/agents/:id/install`.
+- **Database**: migration v3 adds the `llm_routing` table and `agent_instances.llm_override_json`.
+- **CI**: Gitleaks scans the full history (`fetch-depth: 0`); `.gitleaks.toml` allowlists the fake-credential test fixtures.
+
+### Changed
+- **GarraIA installer**: `install()` now runs the official installer (`https://garraia.org/install.sh`, prebuilt release asset with `.sha256` verification) instead of throwing. Supersedes the 1.1.0 "GarraIA repositioning" note; the experimental/dogfooding description stays.
+- **Hermes installer**: `install()` now runs the official NousResearch installer (`https://hermes-agent.nousresearch.com/install.sh`) instead of `git clone`. Supersedes the 1.1.0 "Hermes install URL" note.
+- **Web Deck**: the new Agent Control and Groups pages use `apiFetch` (HTTP error detection + safe JSON parsing) like the rest of the app.
+
 ## [1.1.0] - 2026-08-24
 
 ### Added
