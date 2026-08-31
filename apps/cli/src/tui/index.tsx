@@ -31,7 +31,9 @@ export const TuiApp: React.FC<TuiOptions> = ({ initialView = 'dashboard', initia
   const [isInputFocused, setIsInputFocused] = useState(false);
   const [statusMessage, setStatusMessage] = useState('Welcome to AgentDeck Terminal Deck');
   const [isOrchestrating, setIsOrchestrating] = useState(false);
+  const [localProfile, setLocalProfile] = useState<{ id: string; displayName: string } | null>(null);
   const runAbortRef = useRef<AbortController | null>(null);
+  const pendingRoomDeleteRef = useRef<string | null>(null);
 
   // Chat viewport: scrollOffset counts lines hidden below the window (0 =
   // pinned to newest); live streaming text is buffered in a ref and flushed
@@ -86,6 +88,13 @@ export const TuiApp: React.FC<TuiOptions> = ({ initialView = 'dashboard', initia
       const mgr = await AgentDeckManager.create();
       setManager(mgr);
       setChatService(new ChatService(mgr));
+      // Resolve a real local profile instead of the old hardcoded sender.
+      try {
+        const profile = await mgr.createOrGetLocalProfile(process.env['USER'] || 'Local User');
+        setLocalProfile({ id: profile.id, displayName: profile.displayName });
+      } catch {
+        // fall back to the legacy synthetic sender
+      }
       await refreshData(mgr);
 
       if (initialRoom) {
@@ -287,6 +296,28 @@ export const TuiApp: React.FC<TuiOptions> = ({ initialView = 'dashboard', initia
           setEditMode('edit_room_default');
           setFormInputText(currentRoom.defaultAgentInstanceId || '');
           setStatusMessage(`Set Default Agent Instance ID for #${currentRoom.name} (or leave empty to clear):`);
+        } else if (input === 'x' && currentRoom && manager) {
+          // Delete room: press x twice on the same room to confirm.
+          if (pendingRoomDeleteRef.current === currentRoom.id) {
+            pendingRoomDeleteRef.current = null;
+            const target = currentRoom;
+            manager
+              .deleteRoom(target.id)
+              .then(async () => {
+                setCurrentRoom(null);
+                setMessages([]);
+                setRoomMembers([]);
+                setSelectedRoomIndex(0);
+                await refreshData(manager);
+                setStatusMessage(`🗑 Room #${target.name} deleted.`);
+              })
+              .catch((err: Error) => setStatusMessage(`✖ ${err.message}`));
+          } else {
+            pendingRoomDeleteRef.current = currentRoom.id;
+            setStatusMessage(`⚠ Press "x" again to permanently delete #${currentRoom.name} and its history.`);
+          }
+        } else if (pendingRoomDeleteRef.current) {
+          pendingRoomDeleteRef.current = null;
         }
       }
     },
@@ -348,8 +379,8 @@ export const TuiApp: React.FC<TuiOptions> = ({ initialView = 'dashboard', initia
         const result = await chatService.send({
           roomId: currentRoom.id,
           content,
-          senderUserId: 'local-user',
-          senderDisplayName: 'Michel (You)',
+          senderUserId: localProfile?.id ?? 'local-user',
+          senderDisplayName: localProfile ? `${localProfile.displayName} (You)` : 'You',
           abortSignal: abortController.signal,
           onChunk: (instanceName, chunk) => {
             liveStreamRef.current = {
@@ -370,8 +401,8 @@ export const TuiApp: React.FC<TuiOptions> = ({ initialView = 'dashboard', initia
         const msg = await manager.postMessage({
           roomId: currentRoom.id,
           senderType: 'user',
-          senderId: 'local-user',
-          senderDisplayName: 'Michel (You)',
+          senderId: localProfile?.id ?? 'local-user',
+          senderDisplayName: localProfile ? `${localProfile.displayName} (You)` : 'You',
           content,
         });
         setMessages((prev) => [...prev, msg]);
@@ -524,7 +555,7 @@ export const TuiApp: React.FC<TuiOptions> = ({ initialView = 'dashboard', initia
             <Text bold color="yellow">
               💬 Chat Rooms & Routing Settings ({rooms.length})
             </Text>
-            <Text dimColor>[↑/↓:Select | s:Switch Chat Room | d:Set Default Agent]</Text>
+            <Text dimColor>[↑/↓:Select | s:Switch Chat Room | d:Set Default Agent | x:Delete Room]</Text>
           </Box>
           {rooms.map((room, idx) => {
             const isSelected = idx === selectedRoomIndex;

@@ -664,6 +664,43 @@ export class AgentDeckManager {
     };
   }
 
+  public async getUser(id: string): Promise<UserProfile | null> {
+    const r = await this.db.db.selectFrom('users').selectAll().where('id', '=', id).executeTakeFirst();
+    if (!r) return null;
+    return {
+      id: r.id,
+      type: r.type as 'local_profile',
+      displayName: r.display_name,
+      avatar: r.avatar,
+      email: r.email || undefined,
+      publicKey: r.public_key || undefined,
+      preferences: JSON.parse(r.preferences_json || '{}'),
+      createdAt: r.created_at,
+      updatedAt: r.updated_at,
+    };
+  }
+
+  public async updateUser(
+    id: string,
+    updates: { displayName?: string; avatar?: string; email?: string | null; preferences?: Record<string, unknown> }
+  ): Promise<UserProfile | null> {
+    const patch: Record<string, unknown> = { updated_at: new Date().toISOString() };
+    if (updates.displayName !== undefined) patch['display_name'] = updates.displayName;
+    if (updates.avatar !== undefined) patch['avatar'] = updates.avatar;
+    if (updates.email !== undefined) patch['email'] = updates.email;
+    if (updates.preferences !== undefined) patch['preferences_json'] = JSON.stringify(updates.preferences);
+
+    await this.db.db.updateTable('users').set(patch as never).where('id', '=', id).execute();
+    return this.getUser(id);
+  }
+
+  public async deleteUser(id: string): Promise<void> {
+    // Messages and room memberships keep their (now dangling) sender ids —
+    // the same legacy-tolerant posture as the synthetic 'user-default' ids.
+    await this.db.db.deleteFrom('room_members').where('member_type', '=', 'user').where('member_id', '=', id).execute();
+    await this.db.db.deleteFrom('users').where('id', '=', id).execute();
+  }
+
   // ==========================================
   // ACTIVE RUN REGISTRY (abort controls)
   // ==========================================
@@ -856,6 +893,72 @@ export class AgentDeckManager {
       .updateTable('rooms')
       .set(patch as never)
       .where('id', '=', id)
+      .execute();
+
+    this.eventBus.emit('room:updated', { roomId: id }, { roomId: id });
+  }
+
+  public async deleteRoom(id: string): Promise<void> {
+    if (this.hasActiveRunForRoom(id)) {
+      const err = new Error(
+        `Cannot delete room "${id}" while an orchestration run is active. Stop the run first.`
+      );
+      (err as unknown as Record<string, unknown>).code = 'ROOM_RUN_ACTIVE';
+      (err as unknown as Record<string, unknown>).statusCode = 409;
+      throw err;
+    }
+    // room_members, messages and orchestration_runs all declare
+    // ON DELETE CASCADE and foreign_keys is ON, so one delete cleans up.
+    await this.db.db.deleteFrom('rooms').where('id', '=', id).execute();
+    this.eventBus.emit('room:deleted', { roomId: id }, { roomId: id });
+  }
+
+  /**
+   * Cooperative role check for room mutations. Without a requester identity
+   * (legacy callers) nothing is enforced; with one, rooms that record human
+   * members require owner/admin. This is a UX guard on a single-token deck,
+   * not a security boundary — see docs/security-model.md.
+   */
+  public async assertRoomPermission(
+    roomId: string,
+    userId: string | undefined,
+    action: 'edit' | 'delete'
+  ): Promise<void> {
+    if (!userId) return;
+    const members = await this.listRoomMembers(roomId);
+    const userMembers = members.filter((m) => m.memberType === 'user');
+    if (userMembers.length === 0) return;
+    const me = userMembers.find((m) => m.memberId === userId);
+    if (me && (me.role === 'owner' || me.role === 'admin')) return;
+    const err = new Error(
+      `User "${userId}" cannot ${action} this room (role: ${me?.role ?? 'not a member'}). Owner or admin required.`
+    );
+    (err as unknown as Record<string, unknown>).code = 'ROOM_PERMISSION_DENIED';
+    (err as unknown as Record<string, unknown>).statusCode = 403;
+    throw err;
+  }
+
+  /** Upserts a known user as a room participant (no-op for synthetic ids). */
+  public async ensureRoomUserMember(roomId: string, userId: string): Promise<void> {
+    const user = await this.db.db.selectFrom('users').select('id').where('id', '=', userId).executeTakeFirst();
+    if (!user) return;
+    const existing = await this.db.db
+      .selectFrom('room_members')
+      .select('id')
+      .where('room_id', '=', roomId)
+      .where('member_type', '=', 'user')
+      .where('member_id', '=', userId)
+      .executeTakeFirst();
+    if (existing) return;
+    await this.db.db
+      .insertInto('room_members')
+      .values({
+        id: `rm-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
+        room_id: roomId,
+        member_type: 'user',
+        member_id: userId,
+        role: 'participant',
+      })
       .execute();
   }
 

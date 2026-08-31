@@ -6,7 +6,7 @@
  * turns "nobody answered" from a mystery into a readable reason.
  */
 import { useCallback, useEffect, useState } from 'react';
-import { Loader2, Plus, Users } from 'lucide-react';
+import { Loader2, Plus, Trash2, Users } from 'lucide-react';
 
 type RoomMode = 'mention' | 'panel' | 'debate' | 'round_robin' | 'coordinator';
 
@@ -18,6 +18,8 @@ interface Room {
   defaultAgentInstanceId?: string | null;
   maxTurnsPerRun?: number;
   maxRuntimeSec?: number;
+  maxCostUSD?: number;
+  turnTimeoutSec?: number;
 }
 
 interface AgentInstance {
@@ -144,12 +146,50 @@ export function GroupsPage({ notify }: { notify: Notify }) {
       const res = await fetch(`/api/v1/rooms/${roomId}/default-agent`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ agentInstanceId: instanceId }),
+        body: JSON.stringify({ defaultAgentInstanceId: instanceId }),
       });
       if (!res.ok) throw new Error(await res.text());
       await load();
     } catch (err) {
       notify('error', `Could not set the default agent: ${(err as Error).message}`);
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const deleteRoom = async (room: Room) => {
+    if (!window.confirm(`Delete group "${room.name}"? Its messages and history are removed permanently.`)) {
+      return;
+    }
+    setBusy(`delete-${room.id}`);
+    try {
+      const res = await fetch(`/api/v1/rooms/${room.id}`, { method: 'DELETE' });
+      if (!res.ok) throw new Error(await res.text());
+      notify('success', `Group "${room.name}" deleted.`);
+      await load();
+    } catch (err) {
+      notify('error', `Could not delete the group: ${(err as Error).message}`);
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const saveLimits = async (
+    room: Room,
+    limits: { maxTurnsPerRun?: number; maxRuntimeSec?: number; turnTimeoutSec?: number }
+  ) => {
+    setBusy(`limits-${room.id}`);
+    try {
+      const res = await fetch(`/api/v1/rooms/${room.id}`, {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(limits),
+      });
+      if (!res.ok) throw new Error(await res.text());
+      notify('success', `Limits updated for "${room.name}".`);
+      await load();
+    } catch (err) {
+      notify('error', `Could not update limits: ${(err as Error).message}`);
     } finally {
       setBusy(null);
     }
@@ -243,6 +283,15 @@ export function GroupsPage({ notify }: { notify: Notify }) {
                     </option>
                   ))}
                 </select>
+                <button
+                  className="p-2 rounded-garraSm border border-garra-border text-red-400 hover:bg-red-950/40 transition"
+                  title="Delete group"
+                  onClick={() => void deleteRoom(room)}
+                  disabled={busy !== null}
+                  data-testid={`group-${room.id}-delete`}
+                >
+                  <Trash2 className="w-4 h-4" />
+                </button>
               </div>
             </header>
 
@@ -297,11 +346,42 @@ export function GroupsPage({ notify }: { notify: Notify }) {
               </div>
             )}
 
-            <p className="text-xs text-garra-muted-2 mt-4">
-              Caps: {room.maxTurnsPerRun ?? 10} turns per run
-              {room.maxRuntimeSec ? `, ${room.maxRuntimeSec}s runtime` : ''}. Inter-agent calls are
-              limited separately (depth 3, 12 turns, 30 calls/min).
-            </p>
+            <form
+              className="mt-4 flex flex-wrap items-end gap-2 text-xs"
+              onSubmit={(e) => {
+                e.preventDefault();
+                const data = new FormData(e.currentTarget);
+                const num = (key: string) => {
+                  const v = Number(data.get(key));
+                  return Number.isFinite(v) && v > 0 ? v : undefined;
+                };
+                void saveLimits(room, {
+                  maxTurnsPerRun: num('maxTurnsPerRun'),
+                  maxRuntimeSec: num('maxRuntimeSec'),
+                  turnTimeoutSec: num('turnTimeoutSec'),
+                });
+              }}
+              data-testid={`group-${room.id}-limits`}
+            >
+              <label className="flex flex-col gap-1 text-garra-muted">
+                Turns per run
+                <input className="field !w-24" type="number" min={1} name="maxTurnsPerRun" defaultValue={room.maxTurnsPerRun ?? 10} />
+              </label>
+              <label className="flex flex-col gap-1 text-garra-muted">
+                Runtime cap (s)
+                <input className="field !w-24" type="number" min={1} name="maxRuntimeSec" defaultValue={room.maxRuntimeSec ?? 600} />
+              </label>
+              <label className="flex flex-col gap-1 text-garra-muted">
+                Turn timeout (s)
+                <input className="field !w-24" type="number" min={1} name="turnTimeoutSec" defaultValue={room.turnTimeoutSec ?? ''} placeholder="120" />
+              </label>
+              <button className="btn-gold !py-2" type="submit" disabled={busy !== null}>
+                Save limits
+              </button>
+              <span className="text-garra-muted-2 ml-2">
+                Inter-agent calls are limited separately (depth 3, 12 turns, 30 calls/min).
+              </span>
+            </form>
           </section>
         );
       })}

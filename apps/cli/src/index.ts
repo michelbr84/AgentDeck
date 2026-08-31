@@ -126,19 +126,20 @@ program
   .description('Execute an instant multi-agent orchestration prompt directly from the CLI')
   .option('-r, --room <roomName>', 'Room to run within (defaults to instant room)', 'cli-run')
   .option('-m, --mode <mode>', 'Orchestration mode (mention | panel | debate | coordinator)', 'panel')
+  .option('-u, --user <displayName>', 'Local profile to send as (created on first use)', 'CLI User')
   .action(async (promptText, options) => {
     const manager = await AgentDeckManager.create();
     const chatService = new ChatService(manager);
+    const profile = await manager.createOrGetLocalProfile(options.user, '💻');
 
     const rooms = await manager.listRooms();
     let room = rooms.find((r) => r.name === options.room);
     if (!room) {
       const instances = await manager.listAgentInstances();
-      const user = await manager.createOrGetLocalProfile('CLI User', '💻');
       room = await manager.createRoom({
         name: options.room,
         mode: options.mode as RoomMode,
-        memberUserIds: [user.id],
+        memberUserIds: [profile.id],
         memberInstanceIds: instances.map((i) => i.id),
       });
     }
@@ -149,8 +150,8 @@ program
     const result = await chatService.send({
       roomId: room.id,
       content: promptText,
-      senderUserId: 'cli-user',
-      senderDisplayName: 'CLI User',
+      senderUserId: profile.id,
+      senderDisplayName: profile.displayName,
       mode: options.mode as RoomMode,
       onTurnStart: (name) => console.log(chalk.yellow(`\n[Agent Turn: ${name}]`)),
       onChunk: (_, chunk) => process.stdout.write(chunk),
@@ -313,6 +314,49 @@ program
 // `setup` (above) configures personas and instances. `agents setup` is the
 // other half: it installs/updates the agent binaries themselves and points all
 // of them at one provider+model pair.
+const roomsCommand = program
+  .command('rooms')
+  .description('Manage chat rooms from the CLI');
+
+roomsCommand
+  .command('list', { isDefault: true })
+  .description('List every room with mode and limits')
+  .action(async () => {
+    const manager = await AgentDeckManager.create();
+    const rooms = await manager.listRooms();
+    if (rooms.length === 0) {
+      console.log(chalk.dim('No rooms yet. Create one in the Web Deck, TUI, or with `agentdeck run`.'));
+      return;
+    }
+    for (const room of rooms) {
+      console.log(
+        `${chalk.bold.green(`#${room.name}`)} ${chalk.dim(`(${room.id})`)} — mode: ${room.mode}, turns: ${room.maxTurnsPerRun}, runtime: ${room.maxRuntimeSec}s${room.turnTimeoutSec ? `, turn timeout: ${room.turnTimeoutSec}s` : ''}`
+      );
+    }
+  });
+
+roomsCommand
+  .command('delete <roomIdOrName>')
+  .alias('rm')
+  .description('Delete a room and all of its messages (cascades)')
+  .action(async (roomIdOrName) => {
+    const manager = await AgentDeckManager.create();
+    const rooms = await manager.listRooms();
+    const room = rooms.find((r) => r.id === roomIdOrName || r.name === roomIdOrName);
+    if (!room) {
+      console.error(chalk.red(`No room found matching "${roomIdOrName}"`));
+      process.exitCode = 1;
+      return;
+    }
+    try {
+      await manager.deleteRoom(room.id);
+      console.log(chalk.green(`✔ Room #${room.name} deleted (messages and members cascaded).`));
+    } catch (err) {
+      console.error(chalk.red(`✖ ${(err as Error).message}`));
+      process.exitCode = 1;
+    }
+  });
+
 const agentsCommand = program
   .command('agents')
   .description('Provision the managed agents and point them all at one LLM');

@@ -24,6 +24,12 @@ AgentDeck scans and redacts sensitive credentials before logging or transmitting
 
 ---
 
+## 2.1 Local User Profiles Are Not a Security Boundary
+
+AgentDeck supports multiple local user profiles with per-room roles (owner / admin / participant / observer). Room mutations (edit, delete, member removal) honor these roles **cooperatively**: when a request identifies its profile (`x-agentdeck-user-id` header), rooms that record human members require owner/admin. The deck still authenticates with a single shared bearer token, so profiles are display identities and collaboration conveniences — anyone holding the deck token can act as any profile. Per-user authentication is intentionally out of scope for the local-first design.
+
+---
+
 ## 3. Non-Destructive Configuration Overlays
 
 AgentDeck never overwrites or corrupts native agent configuration files (`.claude.json`, `.hermes/config.json`, `.openclaw/openclaw.json`):

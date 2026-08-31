@@ -33,6 +33,12 @@ Runs diagnostic checks across all agents — or a single agent when `agentId` is
 ### `agentdeck chat [roomId]`
 Opens an interactive group chat session inside your terminal.
 
+### `agentdeck rooms list` / `agentdeck rooms delete <idOrName>`
+Lists every room (mode + limits) or deletes one — messages, members, and run history cascade with it. Deleting a room with a live orchestration run is refused until the run is stopped.
+
+### `agentdeck run <prompt> [--user <displayName>]`
+`--user` resolves (or creates) a local profile and sends as it, instead of the legacy anonymous `CLI User`.
+
 ### `agentdeck plugin list`
 Lists all user-installed declarative and programmatic plugins found in `~/.agentdeck/plugins`.
 

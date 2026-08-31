@@ -491,6 +491,42 @@ export async function createAgentDeckServer(options?: ServerOptions): Promise<Ag
     return redactSecrets(user);
   });
 
+  server.get('/api/v1/users/:id', async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const user = await manager.getUser(id);
+    if (!user) return reply.status(404).send({ error: `User with ID "${id}" not found` });
+    return redactSecrets(user);
+  });
+
+  server.put('/api/v1/users/:id', async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const body = req.body as {
+      displayName?: string;
+      avatar?: string;
+      email?: string | null;
+      preferences?: Record<string, unknown>;
+    };
+    const user = await manager.updateUser(id, body);
+    if (!user) return reply.status(404).send({ error: `User with ID "${id}" not found` });
+    return redactSecrets(user);
+  });
+
+  server.delete('/api/v1/users/:id', async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const user = await manager.getUser(id);
+    if (!user) return reply.status(404).send({ error: `User with ID "${id}" not found` });
+    await manager.deleteUser(id);
+    return { success: true };
+  });
+
+  // Requester identity for cooperative room-role checks: header or query.
+  const requesterId = (req: { headers: Record<string, unknown>; query: unknown }): string | undefined => {
+    const header = req.headers['x-agentdeck-user-id'];
+    if (typeof header === 'string' && header) return header;
+    const q = req.query as { actorId?: string } | undefined;
+    return q?.actorId || undefined;
+  };
+
   // Rooms
   server.get('/api/v1/rooms', async () => {
     const rooms = await manager.listRooms();
@@ -530,14 +566,27 @@ export async function createAgentDeckServer(options?: ServerOptions): Promise<Ag
       maxTurnsPerRun?: number;
       maxRuntimeSec?: number;
       maxCostUSD?: number;
+      turnTimeoutSec?: number;
       workspacePath?: string;
     };
+    await manager.assertRoomPermission(id, requesterId(req), 'edit');
     await manager.updateRoom(id, body);
     const updated = await manager.getRoom(id);
     if (!updated) {
       return reply.status(404).send({ error: `Room with ID ${id} not found` });
     }
     return redactSecrets(updated);
+  });
+
+  server.delete('/api/v1/rooms/:id', async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const room = await manager.getRoom(id);
+    if (!room) {
+      return reply.status(404).send({ error: `Room with ID ${id} not found` });
+    }
+    await manager.assertRoomPermission(id, requesterId(req), 'delete');
+    await manager.deleteRoom(id);
+    return { success: true };
   });
 
   server.post('/api/v1/rooms/:id/default-agent', async (req, reply) => {
@@ -570,6 +619,7 @@ export async function createAgentDeckServer(options?: ServerOptions): Promise<Ag
 
   server.delete('/api/v1/rooms/:id/members/:memberId', async (req) => {
     const { id, memberId } = req.params as { id: string; memberId: string };
+    await manager.assertRoomPermission(id, requesterId(req), 'edit');
     await manager.removeRoomMember(id, memberId);
     return { success: true };
   });

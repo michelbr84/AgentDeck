@@ -48,6 +48,10 @@ export class ChatService {
     const senderUserId = options.senderUserId || 'user-default';
     const senderDisplayName = options.senderDisplayName || 'User';
 
+    // A real profile sending into a room becomes a recorded participant;
+    // synthetic legacy ids ('user-default', 'cli-user', ...) are ignored.
+    await this.manager.ensureRoomUserMember(options.roomId, senderUserId);
+
     return this.engine.executeRun({
       roomId: options.roomId,
       triggerMessage: options.content,

@@ -134,6 +134,14 @@ export default function App() {
   const [currentRoom, setCurrentRoom] = useState<Room | null>(null);
   const [roomMembers, setRoomMembers] = useState<RoomMember[]>([]);
   const [messages, setMessages] = useState<Message[]>([]);
+  const [users, setUsers] = useState<Array<{ id: string; displayName: string; avatar?: string }>>([]);
+  const [currentUserId, setCurrentUserId] = useState<string | null>(() => {
+    try {
+      return window.localStorage.getItem('agentdeck-user-id');
+    } catch {
+      return null;
+    }
+  });
   const [isSending, setIsSending] = useState(false);
   const [activeRunId, setActiveRunId] = useState<string | null>(null);
   const [streamingTurns, setStreamingTurns] = useState<Record<string, { instanceName: string; text: string }>>({});
@@ -195,16 +203,41 @@ export default function App() {
 
   const fetchInitialData = async () => {
     try {
-      const [agentsRes, instancesRes, personasRes, roomsRes] = await Promise.all([
+      const [agentsRes, instancesRes, personasRes, roomsRes, usersRes] = await Promise.all([
         fetch('/api/v1/agents').then((r) => r.json()).catch(() => []),
         fetch('/api/v1/instances').then((r) => r.json()).catch(() => []),
         fetch('/api/v1/personas').then((r) => r.json()).catch(() => []),
         fetch('/api/v1/rooms').then((r) => r.json()).catch(() => []),
+        fetch('/api/v1/users').then((r) => r.json()).catch(() => []),
       ]);
 
       setInstallations(Array.isArray(agentsRes) ? agentsRes : []);
       setInstances(Array.isArray(instancesRes) ? instancesRes : []);
       setPersonas(Array.isArray(personasRes) ? personasRes : []);
+
+      // Identity: replace the old hardcoded sender with selectable local
+      // profiles; seed one on first use.
+      let userList = Array.isArray(usersRes) ? usersRes : [];
+      if (userList.length === 0) {
+        const created = await fetch('/api/v1/users', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ displayName: 'Local User', avatar: '👤' }),
+        })
+          .then((r) => r.json())
+          .catch(() => null);
+        if (created?.id) userList = [created];
+      }
+      setUsers(userList);
+      setCurrentUserId((prev) => {
+        const valid = prev && userList.some((u: { id: string }) => u.id === prev) ? prev : userList[0]?.id ?? null;
+        try {
+          if (valid) window.localStorage.setItem('agentdeck-user-id', valid);
+        } catch {
+          // storage unavailable
+        }
+        return valid;
+      });
       const roomList = Array.isArray(roomsRes) ? roomsRes : [];
       setRooms(roomList);
       if (roomList.length > 0) {
@@ -271,6 +304,17 @@ export default function App() {
     loadRoomData(room.id);
   };
 
+  const currentUser = users.find((u) => u.id === currentUserId) ?? null;
+
+  const handleSelectUser = (id: string) => {
+    setCurrentUserId(id);
+    try {
+      window.localStorage.setItem('agentdeck-user-id', id);
+    } catch {
+      // storage unavailable
+    }
+  };
+
   const handleSendMessage = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!chatInput.trim() || !currentRoom || isSending) return;
@@ -282,7 +326,11 @@ export default function App() {
       const res = await fetch(`/api/v1/rooms/${currentRoom.id}/run`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ prompt, userId: 'user-michel', userName: 'Michel' }),
+        body: JSON.stringify({
+          prompt,
+          userId: currentUser?.id ?? 'user-default',
+          userName: currentUser?.displayName ?? 'User',
+        }),
       });
       const data = await res.json();
       if (data.deliveryTrace && data.deliveryTrace.state === 'no_target') {
@@ -377,6 +425,15 @@ export default function App() {
       case 'run:failed': {
         setActiveRunId(null);
         setStreamingTurns({});
+        break;
+      }
+      case 'room:deleted': {
+        const p = envelope.payload as { roomId?: string } | undefined;
+        if (p?.roomId && p.roomId === currentRoom?.id) {
+          setCurrentRoom(null);
+          setMessages([]);
+          fetchInitialData();
+        }
         break;
       }
       default:
@@ -553,6 +610,25 @@ export default function App() {
       const res = await fetch(`/api/v1/instances/${id}`, { method: 'DELETE' });
       if (!res.ok) throw new Error('Failed to delete agent instance');
       showToast('success', `Agent "${name}" deleted`);
+      fetchInitialData();
+    } catch (err) {
+      showToast('error', (err as Error).message);
+    }
+  };
+
+  const handleDeleteRoom = async () => {
+    if (!currentRoom) return;
+    if (!confirm(`Delete room "${currentRoom.name}"? Its messages and history are removed permanently.`)) return;
+    try {
+      const res = await fetch(`/api/v1/rooms/${currentRoom.id}`, { method: 'DELETE' });
+      if (!res.ok) {
+        const body = (await res.json().catch(() => null)) as { error?: string } | null;
+        throw new Error(body?.error || 'Failed to delete room');
+      }
+      showToast('success', `Room "${currentRoom.name}" deleted`);
+      setShowRoomSettingsModal(false);
+      setCurrentRoom(null);
+      setMessages([]);
       fetchInitialData();
     } catch (err) {
       showToast('error', (err as Error).message);
@@ -1235,6 +1311,18 @@ export default function App() {
 
                 {/* Input form */}
                 <form onSubmit={handleSendMessage} className="p-3 border-t border-slate-800 bg-slate-900/60 flex gap-2">
+                  <select
+                    value={currentUserId ?? ''}
+                    onChange={(e) => handleSelectUser(e.target.value)}
+                    title="Sending as"
+                    className="bg-slate-950 border border-slate-800 rounded-lg px-2 py-2.5 text-sm text-slate-300 max-w-[140px]"
+                  >
+                    {users.map((u) => (
+                      <option key={u.id} value={u.id}>
+                        {u.avatar || '👤'} {u.displayName}
+                      </option>
+                    ))}
+                  </select>
                   <input
                     type="text"
                     value={chatInput}
@@ -1588,7 +1676,14 @@ export default function App() {
                 </div>
               </div>
 
-              <div className="flex justify-end pt-2 border-t border-slate-800">
+              <div className="flex justify-between pt-2 border-t border-slate-800">
+                <button
+                  type="button"
+                  onClick={handleDeleteRoom}
+                  className="px-4 py-2 bg-rose-700 hover:bg-rose-600 rounded-lg text-white font-semibold flex items-center gap-1.5"
+                >
+                  <Trash2 className="w-3.5 h-3.5" /> Delete Room
+                </button>
                 <button
                   type="button"
                   onClick={() => setShowRoomSettingsModal(false)}
