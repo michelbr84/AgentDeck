@@ -70,6 +70,7 @@ describe('@agentdeck/core engine test suite', () => {
     const adapter = new DeclarativePluginAdapter({
       apiVersion: 'agentdeck.io/v1alpha1',
       kind: 'AgentPlugin',
+      category: 'coding',
       id: 'custom-cli',
       name: 'Custom CLI Assistant',
       version: '1.2.0',

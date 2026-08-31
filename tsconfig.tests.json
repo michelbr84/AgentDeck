@@ -1,0 +1,26 @@
+{
+  // Type-checks every test file (they are outside the `tsc -b` project graph, which
+  // is how `new AgentDeckDatabase(<string>)` compiled for weeks). `paths` pins every
+  // `@agentdeck/*` import to the package sources so a test and the code it exercises
+  // see one declaration of each class instead of a src/dist pair. `Bundler` resolution
+  // accepts both the `.js`-suffixed imports of the Node packages and the extensionless
+  // ones of the Vite app.
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "noEmit": true,
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "noUncheckedIndexedAccess": true,
+    "types": ["node"],
+    "baseUrl": ".",
+    "paths": {
+      "@agentdeck/*": ["packages/*/src/index.ts"]
+    }
+  },
+  "include": ["tests/**/*.ts", "packages/*/tests/**/*.ts", "apps/*/tests/**/*.ts"]
+}

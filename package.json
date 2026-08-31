@@ -11,7 +11,7 @@
     "build": "pnpm -r --filter=!agentdeck-monorepo build",
     "test": "vitest run",
     "lint": "eslint .",
-    "typecheck": "tsc -b",
+    "typecheck": "tsc -b && tsc -p tsconfig.tests.json",
     "clean": "pnpm -r exec rm -rf dist node_modules"
   },
   "devDependencies": {

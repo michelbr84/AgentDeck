@@ -167,7 +167,7 @@ describe('AgentDeck Full Runtime & E2E Acceptance Suite', () => {
   // 3. Real WebSocket Streaming & Event Protocol
   it('3. Real WebSocket Protocol Connection, Streaming & Events', async () => {
     const wsUrl = `ws://127.0.0.1:${TEST_PORT}/ws?token=${TEST_TOKEN}`;
-    const receivedEvents: unknown[] = [];
+    const receivedEvents: Array<{ type: string; payload?: { text?: string } }> = [];
 
     const ws = new WebSocket(wsUrl);
 
@@ -202,7 +202,7 @@ describe('AgentDeck Full Runtime & E2E Acceptance Suite', () => {
     expect(receivedEvents.length).toBeGreaterThan(0);
     const chunkEvent = receivedEvents.find((e) => e.type === 'run:chunk');
     expect(chunkEvent).toBeDefined();
-    expect(chunkEvent.payload.text).toBe('Streaming token chunk verification');
+    expect(chunkEvent?.payload?.text).toBe('Streaming token chunk verification');
 
     ws.close();
   });

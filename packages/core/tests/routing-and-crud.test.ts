@@ -45,6 +45,7 @@ describe('AgentDeck v1.0.4 Deterministic Routing & Management Suite', () => {
       language: 'pt-BR',
       systemPromptOverlay: 'You are Atlas.',
       avatarEmoji: '🏛️',
+      isTemplate: false,
     });
 
     const installations = await manager.scanAndSyncInstallations();
@@ -80,8 +81,8 @@ describe('AgentDeck v1.0.4 Deterministic Routing & Management Suite', () => {
     const manager = AgentDeckManager.createWithDatabase(db);
 
     const user = await manager.createOrGetLocalProfile('Michel', '🧑');
-    const p1 = await manager.createPersona({ name: 'Atlas', role: 'Architect', language: 'pt-BR', systemPromptOverlay: '', avatarEmoji: '🏛️' });
-    const p2 = await manager.createPersona({ name: 'Sentinel', role: 'Security', language: 'pt-BR', systemPromptOverlay: '', avatarEmoji: '🛡️' });
+    const p1 = await manager.createPersona({ name: 'Atlas', role: 'Architect', language: 'pt-BR', systemPromptOverlay: '', avatarEmoji: '🏛️', isTemplate: false });
+    const p2 = await manager.createPersona({ name: 'Sentinel', role: 'Security', language: 'pt-BR', systemPromptOverlay: '', avatarEmoji: '🛡️', isTemplate: false });
 
     const installations = await manager.scanAndSyncInstallations();
     const inst1 = await manager.createAgentInstance({ installationId: installations[0]!.id, personaId: p1.id, name: 'Atlas' });
@@ -111,8 +112,8 @@ describe('AgentDeck v1.0.4 Deterministic Routing & Management Suite', () => {
     const manager = AgentDeckManager.createWithDatabase(db);
 
     const user = await manager.createOrGetLocalProfile('Michel', '🧑');
-    const p1 = await manager.createPersona({ name: 'Atlas', role: 'Architect', language: 'pt-BR', systemPromptOverlay: '', avatarEmoji: '🏛️' });
-    const p2 = await manager.createPersona({ name: 'Sentinel', role: 'Security', language: 'pt-BR', systemPromptOverlay: '', avatarEmoji: '🛡️' });
+    const p1 = await manager.createPersona({ name: 'Atlas', role: 'Architect', language: 'pt-BR', systemPromptOverlay: '', avatarEmoji: '🏛️', isTemplate: false });
+    const p2 = await manager.createPersona({ name: 'Sentinel', role: 'Security', language: 'pt-BR', systemPromptOverlay: '', avatarEmoji: '🛡️', isTemplate: false });
 
     const installations = await manager.scanAndSyncInstallations();
     const inst1 = await manager.createAgentInstance({ installationId: installations[0]!.id, personaId: p1.id, name: 'Atlas' });
@@ -147,6 +148,7 @@ describe('AgentDeck v1.0.4 Deterministic Routing & Management Suite', () => {
       language: 'pt-BR',
       systemPromptOverlay: '',
       avatarEmoji: '⚡',
+      isTemplate: false,
     });
 
     const installations = await manager.scanAndSyncInstallations();
@@ -177,6 +179,7 @@ describe('AgentDeck v1.0.4 Deterministic Routing & Management Suite', () => {
       language: 'pt-BR',
       systemPromptOverlay: 'Base prompt',
       avatarEmoji: '🏛️',
+      isTemplate: false,
     });
 
     const copy = await manager.duplicatePersona(original.id, 'Architect V2');
