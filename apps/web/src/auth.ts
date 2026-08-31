@@ -15,19 +15,39 @@ export const AUTH_REQUIRED_EVENT = 'agentdeck:auth-required';
 
 const TOKEN_PARAM = 'token';
 
-function readTokenParam(raw: string): string | null {
-  const query = raw.startsWith('?') || raw.startsWith('#') ? raw.slice(1) : raw;
+function readQueryToken(search: string): string | null {
+  const query = search.startsWith('?') ? search.slice(1) : search;
   if (!query) return null;
   const token = new URLSearchParams(query).get(TOKEN_PARAM)?.trim() ?? '';
   return token ? token : null;
 }
 
 /**
- * Reads a one-shot token from the address bar: `?token=…` wins over `#token=…`.
- * Returns the trimmed token, or null when absent or empty.
+ * A fragment is not a form-encoded query string: `+` is a literal plus, only
+ * percent-escapes are decoded (and left as-is when malformed).
+ */
+function readFragmentToken(hash: string): string | null {
+  const fragment = hash.startsWith('#') ? hash.slice(1) : hash;
+  const match = /(?:^|&)token=([^&]*)/.exec(fragment);
+  if (!match) return null;
+  let raw = match[1] ?? '';
+  try {
+    raw = decodeURIComponent(raw);
+  } catch {
+    // keep the raw value
+  }
+  const token = raw.trim();
+  return token ? token : null;
+}
+
+/**
+ * Reads a one-shot token from the address bar. `#token=…` is the canonical form
+ * (a fragment never reaches the server, the Referer header or access logs) and
+ * wins over `?token=…`, which is accepted for convenience. Returns the trimmed
+ * token, or null when absent or empty.
  */
 export function extractTokenFromLocation(loc: { search: string; hash: string }): string | null {
-  return readTokenParam(loc.search) ?? readTokenParam(loc.hash);
+  return readFragmentToken(loc.hash) ?? readQueryToken(loc.search);
 }
 
 function withoutTokenParam(raw: string, prefix: '?' | '#'): string {

@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   Bot,
   MessageSquare,
@@ -27,6 +27,7 @@ import {
 import { WEB_APP_VERSION } from './version';
 import { apiFetch, tokenStore } from './api';
 import { AUTH_REQUIRED_EVENT } from './auth';
+import { useFocusTrap } from './hooks/useFocusTrap';
 import { AgentControlPage } from './pages/AgentControlPage';
 import { GroupsPage } from './pages/GroupsPage';
 
@@ -182,14 +183,21 @@ export default function App() {
   const [authTokenInput, setAuthTokenInput] = useState('');
   const [authError, setAuthError] = useState<string | null>(null);
   const [authEpoch, setAuthEpoch] = useState(0);
+  // Keyboard focus stays inside the auth dialog while it is up; the page
+  // behind it cannot be used anyway.
+  const authDialogRef = useRef<HTMLDivElement>(null);
+  useFocusTrap(authDialogRef, showAuthModal);
 
   useEffect(() => {
     // The one-shot ?token= / #token= sign-in is applied when api.ts is
     // evaluated (see adoptTokenFromLocation), i.e. before this or any child
     // page effect can issue a request. Here we only react to 401s.
-    const onAuthRequired = () => {
-      // A stored token that still gets 401 is simply wrong; say so.
-      if (tokenStore.get()) setAuthError('The daemon rejected that token. Check the value and try again.');
+    const onAuthRequired = (event: Event) => {
+      // Only a 401 for the token we currently hold means that token is wrong; a
+      // request issued before the user signed in may land after the store changed.
+      const used = (event as CustomEvent<{ token: string | null }>).detail?.token ?? null;
+      const current = tokenStore.get();
+      if (current && used === current) setAuthError('The daemon rejected that token. Check the value and try again.');
       setShowAuthModal(true);
     };
     window.addEventListener(AUTH_REQUIRED_EVENT, onAuthRequired);
@@ -210,7 +218,7 @@ export default function App() {
     fetchInitialData();
   };
 
-  const showToast =(type: 'success' | 'error' | 'info', message: string) => {
+  const showToast = (type: 'success' | 'error' | 'info', message: string) => {
     setStatusNotification({ type, message });
     setTimeout(() => setStatusNotification(null), 4000);
   };
@@ -1143,61 +1151,6 @@ export default function App() {
         </div>
       </main>
 
-      {/* MODAL: AUTH TOKEN (daemon started with --token) */}
-      {showAuthModal && (
-        <div className="fixed inset-0 bg-black/70 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-          <div
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="auth-modal-title"
-            className="bg-slate-900 border border-slate-800 rounded-2xl w-full max-w-md p-6 space-y-4 shadow-2xl"
-          >
-            <div className="flex items-center gap-2 border-b border-slate-800 pb-3">
-              <KeyRound className="w-5 h-5 text-cyan-400" />
-              <h3 id="auth-modal-title" className="font-bold text-base text-slate-100">Authentication Required</h3>
-            </div>
-
-            <form onSubmit={handleUnlock} className="space-y-4 text-xs">
-              <p className="text-slate-400">
-                This Web Deck was started with <code className="font-mono text-cyan-300">--token</code>. Paste the token to continue.
-              </p>
-
-              <div>
-                <label htmlFor="authToken" className="block text-slate-400 mb-1 font-semibold">Access Token</label>
-                <input
-                  id="authToken"
-                  type="password"
-                  autoFocus
-                  autoComplete="off"
-                  spellCheck={false}
-                  value={authTokenInput}
-                  onChange={(e) => setAuthTokenInput(e.target.value)}
-                  placeholder="Paste the --token secret"
-                  className="w-full bg-slate-950 border border-slate-800 rounded-lg p-2 text-slate-100 font-mono focus:outline-none focus:border-cyan-500"
-                />
-              </div>
-
-              {authError && (
-                <div className="flex items-start gap-2 text-rose-200 bg-rose-950/40 border border-rose-800/50 rounded-lg p-2.5" role="alert">
-                  <AlertTriangle className="w-3.5 h-3.5 mt-0.5 shrink-0 text-rose-400" />
-                  <span>{authError}</span>
-                </div>
-              )}
-
-              <div className="flex justify-end pt-2 border-t border-slate-800">
-                <button
-                  type="submit"
-                  disabled={!authTokenInput.trim()}
-                  className="px-4 py-2 bg-cyan-600 hover:bg-cyan-500 disabled:bg-slate-700 disabled:text-slate-500 rounded-lg text-white font-semibold"
-                >
-                  Unlock
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
-
       {/* MODAL: PERSONA CREATE / EDIT */}
       {showPersonaModal && (
         <div className="fixed inset-0 bg-black/70 backdrop-blur-sm z-50 flex items-center justify-center p-4">
@@ -1600,6 +1553,64 @@ export default function App() {
                   className="px-4 py-2 bg-cyan-600 hover:bg-cyan-500 disabled:bg-slate-700 disabled:text-slate-500 rounded-lg text-white font-semibold"
                 >
                   {creatingRoom ? 'Creating...' : 'Create Room'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL: AUTH TOKEN (daemon started with --token). Rendered last and
+          above the other modals (z-[60]) so a 401 raised from inside one of
+          them cannot leave this dialog hidden behind it. */}
+      {showAuthModal && (
+        <div className="fixed inset-0 bg-black/70 backdrop-blur-sm z-[60] flex items-center justify-center p-4">
+          <div
+            ref={authDialogRef}
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="auth-modal-title"
+            className="bg-slate-900 border border-slate-800 rounded-2xl w-full max-w-md p-6 space-y-4 shadow-2xl"
+          >
+            <div className="flex items-center gap-2 border-b border-slate-800 pb-3">
+              <KeyRound className="w-5 h-5 text-cyan-400" />
+              <h3 id="auth-modal-title" className="font-bold text-base text-slate-100">Authentication Required</h3>
+            </div>
+
+            <form onSubmit={handleUnlock} className="space-y-4 text-xs">
+              <p className="text-slate-400">
+                This Web Deck was started with <code className="font-mono text-cyan-300">--token</code>. Paste the token to continue.
+              </p>
+
+              <div>
+                <label htmlFor="authToken" className="block text-slate-400 mb-1 font-semibold">Access Token</label>
+                <input
+                  id="authToken"
+                  type="password"
+                  autoFocus
+                  autoComplete="off"
+                  spellCheck={false}
+                  value={authTokenInput}
+                  onChange={(e) => setAuthTokenInput(e.target.value)}
+                  placeholder="Paste the --token secret"
+                  className="w-full bg-slate-950 border border-slate-800 rounded-lg p-2 text-slate-100 font-mono focus:outline-none focus:border-cyan-500"
+                />
+              </div>
+
+              {authError && (
+                <div className="flex items-start gap-2 text-rose-200 bg-rose-950/40 border border-rose-800/50 rounded-lg p-2.5" role="alert">
+                  <AlertTriangle className="w-3.5 h-3.5 mt-0.5 shrink-0 text-rose-400" />
+                  <span>{authError}</span>
+                </div>
+              )}
+
+              <div className="flex justify-end pt-2 border-t border-slate-800">
+                <button
+                  type="submit"
+                  disabled={!authTokenInput.trim()}
+                  className="px-4 py-2 bg-cyan-600 hover:bg-cyan-500 disabled:bg-slate-700 disabled:text-slate-500 rounded-lg text-white font-semibold"
+                >
+                  Unlock
                 </button>
               </div>
             </form>

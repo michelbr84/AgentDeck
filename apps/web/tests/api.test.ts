@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { TOKEN_STORAGE_KEY } from '../src/auth';
+import { ApiAuthError, AUTH_REQUIRED_EVENT, TOKEN_STORAGE_KEY } from '../src/auth';
 
 /**
  * Wiring of the one-shot `?token=` sign-in in api.ts. It has to happen when the
@@ -90,5 +90,20 @@ describe('api.ts bootstrap: one-shot ?token= sign-in', () => {
     const api = await import('../src/api');
 
     expect(api.tokenStore.get()).toBeNull();
+  });
+});
+
+describe('apiFetch on 401', () => {
+  it('announces agentdeck:auth-required with the token it used and throws ApiAuthError', async () => {
+    const { api, storage } = await loadApiAt({ pathname: '/', search: '', hash: '#token=used-token' });
+    expect(storage.getItem(TOKEN_STORAGE_KEY)).toBe('used-token');
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('', { status: 401 })));
+    // api.ts was re-imported after vi.resetModules(), so it throws its own auth.ts class; match by shape.
+    await expect(api.apiFetch('/api/v1/agents')).rejects.toMatchObject({ name: ApiAuthError.name, status: 401 });
+    const dispatch = (globalThis as unknown as { window: { dispatchEvent: ReturnType<typeof vi.fn> } }).window.dispatchEvent;
+    expect(dispatch).toHaveBeenCalledTimes(1);
+    const event = dispatch.mock.calls[0]?.[0] as CustomEvent<{ token: string | null }>;
+    expect(event.type).toBe(AUTH_REQUIRED_EVENT);
+    expect(event.detail.token).toBe('used-token');
   });
 });
