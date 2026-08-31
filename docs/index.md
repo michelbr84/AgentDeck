@@ -47,4 +47,6 @@ Welcome to the **AgentDeck** documentation. AgentDeck is a unified agent managem
 | `agentdeck upgrade <agent>` | Safely upgrade an agent with automated pre-upgrade configuration backups |
 | `agentdeck doctor [agent]` | Run diagnostic Level 1 & Level 2 health checks across all agents, or a single one |
 | `agentdeck chat <room>` | Start an interactive CLI chat session in a room |
+| `agentdeck rooms list\|delete` | List rooms with limits, or delete one (messages cascade) |
+| `agentdeck plugin install <src>` | Install a plugin from a local path or pinned `github:owner/repo#ref` |
 | `agentdeck docs` | View built-in offline documentation directly in the terminal |

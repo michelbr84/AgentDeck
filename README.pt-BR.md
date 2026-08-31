@@ -32,7 +32,7 @@ O **AgentDeck** é uma plataforma de gerenciamento e orquestração de agentes d
 - 🖥️ **Interface Dupla**:
   - **TUI Completa (Ink)**: Interface rica e responsiva direto no terminal com suporte a teclado.
   - **Web Deck (React + Vite + Tailwind CSS)**: Interface web moderna com streaming em tempo real via WebSocket.
-- 🔌 **Ecossistema de Plugins Extensível**: Suporte a plugins declarativos simples (`manifest.json`) e adaptadores completos (`@agentdeck/adapter-sdk`).
+- 🔌 **Ecossistema de Plugins Extensível**: Plugins declarativos (`manifest.json`/`manifest.yaml`) e adaptadores programáticos Tier-2 carregados via factory `createAdapter(sdk)`, instaláveis com `agentdeck plugin install` (fontes `github:` apenas com ref fixado).
 - 🔒 **Segurança em Profundidade**: Vinculado por padrão a `127.0.0.1`, autenticação via token Bearer para rede local, redação recursiva de segredos/chaves de API e isolamento de permissões POSIX `0700`.
 
 ---

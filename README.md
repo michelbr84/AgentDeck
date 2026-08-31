@@ -32,7 +32,7 @@
 - 🖥️ **Dual Interface**:
   - **Full-featured TUI (Ink)**: Responsive, keyboard-driven terminal user interface.
   - **Web Deck (React + Vite + Tailwind CSS)**: Modern browser deck with real-time WebSocket streaming.
-- 🔌 **Extensible Plugin Ecosystem**: Declarative simple plugins (`manifest.json`) and programmatic full adapters (`@agentdeck/adapter-sdk`).
+- 🔌 **Extensible Plugin Ecosystem**: Declarative plugins (`manifest.json`/`manifest.yaml`) and programmatic Tier-2 adapters loaded via a `createAdapter(sdk)` factory, installable with `agentdeck plugin install` (pinned `github:` sources only).
 - 🔒 **Security in Depth**: Localhost-by-default (`127.0.0.1`), LAN bearer token authentication, recursive secret redaction, and `0700` filesystem isolation.
 
 ---
