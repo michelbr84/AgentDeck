@@ -11,7 +11,7 @@ import { runAgentsRollback } from './agents/rollback.js';
 import { runAgentsLink } from './agents/link.js';
 import { AgentDeckManager, ChatService } from '@agentdeck/core';
 import type { RoomMode } from '@agentdeck/protocol';
-import { createAgentDeckServer } from '@agentdeck/server';
+import { createAgentDeckServer, isLoopbackHost } from '@agentdeck/server';
 import { AGENTDECK_VERSION } from '@agentdeck/shared';
 
 const program = new Command();
@@ -246,7 +246,7 @@ program
   .alias('start')
   .description('Start the local Fastify REST/WebSocket server and serve Web Deck')
   .option('-p, --port <number>', 'Server port', '4321')
-  .option('--host <host>', 'Host to bind to', '127.0.0.1')
+  .option('--host <host>', 'Host to bind to (loopback unless --token is given)', '127.0.0.1')
   .option('--lan', 'Allow local area network connections (0.0.0.0)')
   .option('--token <secret>', 'Mandatory authentication token for API and WebSocket')
   .option('--web-root <path>', 'Custom directory containing Web Deck static production build')
@@ -255,6 +255,13 @@ program
     if (options.lan && !options.token) {
       console.error(chalk.red('\n✖ --lan requires --token for authentication.'));
       console.error(chalk.yellow('  Usage: agentdeck web --lan --token <secret>\n'));
+      process.exit(1);
+    }
+
+    // Pre-validate: a non-loopback --host is LAN exposure by another name
+    if (!options.lan && options.host && !isLoopbackHost(options.host) && !options.token) {
+      console.error(chalk.red(`\n✖ --host ${options.host} is not a loopback address; it requires --token for authentication.`));
+      console.error(chalk.yellow(`  Usage: agentdeck web --host ${options.host} --token <secret>\n`));
       process.exit(1);
     }
 

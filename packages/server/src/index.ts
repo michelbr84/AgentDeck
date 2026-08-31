@@ -29,6 +29,28 @@ export interface ServerOptions {
   webRoot?: string;
 }
 
+// A literal loopback host. Nothing here is attacker-controllable through DNS,
+// which is the whole point of checking it: DNS rebinding delivers the attacker's
+// hostname in `Host`, a cross-site fetch or WebSocket upgrade a foreign `Origin`.
+const OCTET = String.raw`(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)`;
+const LOOPBACK = String.raw`(?:localhost\.?|127(?:\.${OCTET}){3}|\[::1\])`;
+const LOCAL_HOST_RE = new RegExp(`^${LOOPBACK}(?::\\d{1,5})?$`, 'i');
+const LOCAL_ORIGIN_RE = new RegExp(`^https?://${LOOPBACK}(?::\\d{1,5})?$`, 'i');
+
+/** True for `localhost`, `127.x.x.x`, `[::1]` / `::1`, with or without a port. */
+export function isLoopbackHost(host: string): boolean {
+  return host === '::1' || LOCAL_HOST_RE.test(host);
+}
+
+/** What the no-token local guard covers: REST, the event WebSocket, and /health (it reveals webRoot). */
+function isLocalGuardedUrl(url: string): boolean {
+  // Fastify routes on the path alone, so compare the path alone: `/health?x`
+  // must not slip past a guard that stops `/health`.
+  const q = url.indexOf('?');
+  const pathname = q === -1 ? url : url.slice(0, q);
+  return pathname.startsWith('/api/') || pathname === '/ws' || pathname === '/health';
+}
+
 export function resolveWebRoot(customWebRoot?: string): string | null {
   // 1. Explicit user override
   if (customWebRoot) {
@@ -89,12 +111,38 @@ export async function createAgentDeckServer(options?: ServerOptions): Promise<Ag
   if (options?.allowLan && !authToken) {
     throw new Error('--lan requires --token for authentication. Refusing to start without auth on LAN.');
   }
+  // Same rule for an explicit non-loopback host: it is LAN exposure by another name
+  if (options?.host && !isLoopbackHost(options.host) && !authToken) {
+    throw new Error(`--host ${options.host} is not a loopback address; it requires --token for authentication.`);
+  }
+
+  // 0. Local request guard (no-token mode). No token implies a loopback bind
+  // (allowLan requires one, above), but a browser can still be tricked into
+  // talking to us: DNS rebinding sends the attacker's hostname in `Host`, and a
+  // cross-site fetch or WebSocket upgrade carries a foreign `Origin`. Both must
+  // therefore be loopback literals. Local CLIs, curl and the Node `ws` client
+  // send a loopback Host and no Origin, so they pass. Registered before
+  // @fastify/cors so the answer is a deliberate 403 rather than the 500 the
+  // cors callback produces for a rejected origin.
+  if (!authToken) {
+    server.addHook('onRequest', async (req, reply) => {
+      if (!isLocalGuardedUrl(req.url)) return;
+      const host = req.headers.host;
+      if (host && !LOCAL_HOST_RE.test(host)) {
+        return reply.status(403).send({ error: 'Forbidden: non-local Host header' });
+      }
+      const origin = req.headers.origin;
+      if (origin && !LOCAL_ORIGIN_RE.test(origin)) {
+        return reply.status(403).send({ error: 'Forbidden: cross-site request' });
+      }
+    });
+  }
 
   // 1. CORS
   await server.register(cors, {
     origin: (origin, cb) => {
-      // Allow localhost and local IP origins (exact prefix match to block http://localhost.evil.com)
-      if (!origin || /^https?:\/\/localhost(:\d+)?$/i.test(origin) || /^https?:\/\/127\.0\.0\.1(:\d+)?$/i.test(origin)) {
+      // Same loopback set as the local guard (anchored, so http://localhost.evil.com is out)
+      if (!origin || LOCAL_ORIGIN_RE.test(origin)) {
         return cb(null, true);
       }
       if (options?.allowLan) {
@@ -169,7 +217,7 @@ export async function createAgentDeckServer(options?: ServerOptions): Promise<Ag
   // Token authentication hook if token is set
   if (authToken) {
     server.addHook('onRequest', async (req, reply) => {
-      const isApi = req.url.startsWith('/api/v1');
+      const isApi = req.url.startsWith('/api/');
       const isWs = req.url === '/ws' || req.url.startsWith('/ws?');
       if (isApi || isWs) {
         // Check Bearer header first
