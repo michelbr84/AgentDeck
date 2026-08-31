@@ -20,6 +20,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Hermes installer**: `install()` now runs the official NousResearch installer (`https://hermes-agent.nousresearch.com/install.sh`) instead of `git clone`. Supersedes the 1.1.0 "Hermes install URL" note.
 - **Web Deck**: the new Agent Control and Groups pages use `apiFetch` (HTTP error detection + safe JSON parsing) like the rest of the app.
 
+### Fixed
+- **Groups page**: "set default agent" now sends `defaultAgentInstanceId` (the key the server reads) instead of `agentInstanceId`, which silently cleared the room's default.
+- **MCP server version**: `initialize` reports `AGENTDECK_VERSION` instead of a hardcoded `1.0.4`.
+- **Tests**: the `database-migration` and `routing-service` suites pass `{ dbPath }` to `AgentDeckDatabase` (a bare string opened an anonymous in-memory database) and assert the file exists; `version-consistency` no longer creates a real SQLite database under `~/.agentdeck`.
+
+### Security
+- **Local request guard (no-token mode)**: `/api/*`, `/ws` and `/health` now answer only requests whose `Host` is a loopback literal (`localhost`, `127.0.0.0/8`, `[::1]`) and whose `Origin`, when present, is loopback too — closing DNS rebinding, cross-site `fetch` and cross-site WebSocket access to the daemon with a deliberate 403 (previously a foreign `Origin` died with an accidental 500 from CORS, and a rebinding `GET` went through). Local CLIs, `curl` and the Node `ws` client are unaffected.
+- **`--host`**: a non-loopback `--host` now requires `--token`, exactly like `--lan` (enforced by the CLI and by `createAgentDeckServer`). The CORS allowlist uses the same loopback set as the guard (adds `[::1]`, `127.0.0.0/8` and `localhost.`).
+- **Provider test**: `POST /api/v1/providers/test` rejects non-`http(s)` Ollama `baseUrl`s before fetching. Residual by design: an authorized local user can make the daemon `GET <baseUrl>/api/tags` on any reachable http(s) host (only reachability and model presence are learned).
+
+### Notes
+- `agentdeck agents` with no subcommand runs `agents setup` (intentional, PR #15); `agentdeck status` / `list` still print the instance matrix.
+
 ## [1.1.0] - 2026-08-24
 
 ### Added

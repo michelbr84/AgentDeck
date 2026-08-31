@@ -21,7 +21,7 @@ Launches the interactive Ink-based Terminal User Interface with dashboard, agent
 - Navigation: `1..5` (1: Dashboard, 2: Agents, 3: Rooms, 4: Chat, 5: Docs), `Tab`, `Shift+Tab`, `Left/Right Arrow`.
 - Chat Input: Press `i` or `Enter` in the Chat view to focus prompt input. Press `Esc` to unfocus and return to view navigation.
 
-### `agentdeck web [--port <number>] [--lan] [--token <secret>]`
+### `agentdeck web [--port <number>] [--host <host>] [--lan] [--token <secret>]`
 Starts the AgentDeck REST and WebSocket daemon and serves the web application.
 
 ### `agentdeck upgrade [agentId] [--dry-run]`
@@ -56,4 +56,4 @@ Displays built-in offline documentation directly in your terminal.
 You can create a declarative plugin in `~/.agentdeck/plugins/<my-agent>/manifest.json` using `agentdeck plugin new <my-agent>`. See the [Adapter Development Guide](adapter-development.md) for details.
 
 ### Q: How does AgentDeck secure local and LAN web access?
-By default, AgentDeck binds strictly to `127.0.0.1`. When running with `--lan`, you can supply `--token <secret>` which enforces mandatory HTTP Bearer tokens on all `/api/v1/*` routes and WebSocket authentication.
+By default, AgentDeck binds strictly to `127.0.0.1`. When running with `--lan`, you must supply `--token <secret>`, which enforces mandatory HTTP Bearer tokens on all `/api/*` routes and WebSocket authentication. Without `--token`, the daemon additionally refuses `/api/*`, `/ws` and `/health` requests whose `Host` or `Origin` is not a loopback address (DNS-rebinding / cross-site protection), and any non-loopback `--host` requires `--token` as well.

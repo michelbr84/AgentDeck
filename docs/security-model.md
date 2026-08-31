@@ -9,6 +9,8 @@ AgentDeck is built from the ground up for safe, defense-in-depth operation on de
 - **Strict Localhost Default**: The Web deck and REST daemon bind strictly to `127.0.0.1:4321`.
 - **LAN Access Protection**: If LAN mode is enabled (`--lan`), authentication is mandatory via a high-entropy bearer token (`--token <secret>`).
 - **Constant-Time Verification**: All token comparisons use `crypto.timingSafeEqual` to prevent timing attacks.
+- **Local Request Guard (no-token mode)**: Without `--token`, `/api/*`, `/ws` and `/health` only answer requests whose `Host` header is a loopback literal (`localhost`, `127.0.0.0/8`, `[::1]`) and whose `Origin`, when present, is loopback as well. This blocks DNS-rebinding, cross-site `fetch` and cross-site WebSocket access from a browser; local CLIs and `curl` are unaffected. A non-loopback `--host` requires `--token`, exactly like `--lan`.
+- **Provider Reachability Checks**: `POST /api/v1/providers/test` only contacts `http(s)` base URLs. By design, an authorized local user can make the daemon `GET <baseUrl>/api/tags` on any reachable host (Ollama on a LAN box is a supported setup); only reachability and whether the model is listed are reported.
 
 ---
 
