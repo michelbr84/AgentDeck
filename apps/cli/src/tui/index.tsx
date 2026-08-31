@@ -1,7 +1,8 @@
-import React, { useState, useEffect } from 'react';
-import { render, Box, Text, useInput, useApp } from 'ink';
+import React, { useState, useEffect, useRef } from 'react';
+import { render, Box, Text, useInput, useApp, useStdout } from 'ink';
 import TextInput from 'ink-text-input';
-import { AgentDeckManager, ChatService } from '@agentdeck/core';
+import { AgentDeckManager, ChatService, RunAbortError } from '@agentdeck/core';
+import { formatMessageLines, sliceViewport, maxScrollOffset } from './chat-viewport.js';
 import { AgentInstallation, AgentInstance, Room, Message, Persona } from '@agentdeck/protocol';
 import { AGENTDECK_VERSION } from '@agentdeck/shared';
 import { getNextView, resolveViewForKey, type TuiView } from './navigation.js';
@@ -30,6 +31,19 @@ export const TuiApp: React.FC<TuiOptions> = ({ initialView = 'dashboard', initia
   const [isInputFocused, setIsInputFocused] = useState(false);
   const [statusMessage, setStatusMessage] = useState('Welcome to AgentDeck Terminal Deck');
   const [isOrchestrating, setIsOrchestrating] = useState(false);
+  const [localProfile, setLocalProfile] = useState<{ id: string; displayName: string } | null>(null);
+  const runAbortRef = useRef<AbortController | null>(null);
+  const pendingRoomDeleteRef = useRef<string | null>(null);
+
+  // Chat viewport: scrollOffset counts lines hidden below the window (0 =
+  // pinned to newest); live streaming text is buffered in a ref and flushed
+  // on an interval so Ink is not re-rendered per chunk.
+  const [scrollOffset, setScrollOffset] = useState(0);
+  const [liveStream, setLiveStream] = useState<Record<string, string>>({});
+  const liveStreamRef = useRef<Record<string, string>>({});
+  const chatScrollMaxRef = useRef(0);
+  const chatPageRef = useRef(8);
+  const { stdout } = useStdout();
 
   // Sub-navigation / selection indices inside management views
   const [selectedPersonaIndex, setSelectedPersonaIndex] = useState(0);
@@ -74,6 +88,13 @@ export const TuiApp: React.FC<TuiOptions> = ({ initialView = 'dashboard', initia
       const mgr = await AgentDeckManager.create();
       setManager(mgr);
       setChatService(new ChatService(mgr));
+      // Resolve a real local profile instead of the old hardcoded sender.
+      try {
+        const profile = await mgr.createOrGetLocalProfile(process.env['USER'] || 'Local User');
+        setLocalProfile({ id: profile.id, displayName: profile.displayName });
+      } catch {
+        // fall back to the legacy synthetic sender
+      }
       await refreshData(mgr);
 
       if (initialRoom) {
@@ -96,6 +117,12 @@ export const TuiApp: React.FC<TuiOptions> = ({ initialView = 'dashboard', initia
     (input, key) => {
       // Exit / Cancel conditions
       if (key.escape) {
+        if (isOrchestrating) {
+          // ESC during a run stops the run, never the whole app.
+          runAbortRef.current?.abort(new RunAbortError());
+          setStatusMessage('⏹ Stopping run...');
+          return;
+        }
         if (editMode !== 'none') {
           setEditMode('none');
           setFormInputText('');
@@ -125,6 +152,34 @@ export const TuiApp: React.FC<TuiOptions> = ({ initialView = 'dashboard', initia
         setIsInputFocused(true);
         setStatusMessage('Chat input focused. Type message and press Enter. (ESC to unfocus)');
         return;
+      }
+
+      // Chat viewport scrolling (only in chat view, input unfocused)
+      if (view === 'chat') {
+        if (key.upArrow) {
+          setScrollOffset((p) => Math.min(chatScrollMaxRef.current, p + 1));
+          return;
+        }
+        if (key.downArrow) {
+          setScrollOffset((p) => Math.max(0, p - 1));
+          return;
+        }
+        if (key.pageUp) {
+          setScrollOffset((p) => Math.min(chatScrollMaxRef.current, p + chatPageRef.current));
+          return;
+        }
+        if (key.pageDown) {
+          setScrollOffset((p) => Math.max(0, p - chatPageRef.current));
+          return;
+        }
+        if (input === 'g') {
+          setScrollOffset(chatScrollMaxRef.current);
+          return;
+        }
+        if (input === 'G') {
+          setScrollOffset(0);
+          return;
+        }
       }
 
       // Portable Numeric Navigation: 1..7
@@ -230,10 +285,34 @@ export const TuiApp: React.FC<TuiOptions> = ({ initialView = 'dashboard', initia
           setEditMode('edit_room_default');
           setFormInputText(currentRoom.defaultAgentInstanceId || '');
           setStatusMessage(`Set Default Agent Instance ID for #${currentRoom.name} (or leave empty to clear):`);
+        } else if (input === 'x' && currentRoom && manager) {
+          // Delete room: press x twice on the same room to confirm.
+          if (pendingRoomDeleteRef.current === currentRoom.id) {
+            pendingRoomDeleteRef.current = null;
+            const target = currentRoom;
+            manager
+              .deleteRoom(target.id)
+              .then(async () => {
+                setCurrentRoom(null);
+                setMessages([]);
+                setRoomMembers([]);
+                setSelectedRoomIndex(0);
+                await refreshData(manager);
+                setStatusMessage(`🗑 Room #${target.name} deleted.`);
+              })
+              .catch((err: Error) => setStatusMessage(`✖ ${err.message}`));
+          } else {
+            pendingRoomDeleteRef.current = currentRoom.id;
+            setStatusMessage(`⚠ Press "x" again to permanently delete #${currentRoom.name} and its history.`);
+          }
+        } else if (pendingRoomDeleteRef.current) {
+          pendingRoomDeleteRef.current = null;
         }
       }
     },
-    { isActive: process.stdin.isTTY }
+    // stdin.isTTY is `undefined` (not false) on pipes, and Ink treats a
+    // non-false isActive as active — which then throws on setRawMode.
+    { isActive: Boolean(process.stdin.isTTY) }
   );
 
   const handleFormSubmit = async () => {
@@ -256,22 +335,53 @@ export const TuiApp: React.FC<TuiOptions> = ({ initialView = 'dashboard', initia
     await refreshData(manager);
   };
 
+  // Flush streamed chunks to state at a bounded rate while orchestrating.
+  useEffect(() => {
+    if (!isOrchestrating) {
+      liveStreamRef.current = {};
+      setLiveStream({});
+      return;
+    }
+    const timer = setInterval(() => setLiveStream({ ...liveStreamRef.current }), 120);
+    return () => clearInterval(timer);
+  }, [isOrchestrating]);
+
+  // Re-pin the viewport to the newest line when switching rooms.
+  useEffect(() => {
+    setScrollOffset(0);
+  }, [currentRoom?.id]);
+
   const handleSendMessage = async () => {
     if (!chatInput.trim() || !manager || !currentRoom) return;
     const content = chatInput.trim();
     setChatInput('');
     setIsInputFocused(false);
 
-    setStatusMessage(`Sending prompt to #${currentRoom.name}...`);
+    setStatusMessage(`Sending prompt to #${currentRoom.name}... (ESC stops the run)`);
+    setScrollOffset(0);
     setIsOrchestrating(true);
+    const abortController = new AbortController();
+    runAbortRef.current = abortController;
 
     try {
       if (chatService) {
         const result = await chatService.send({
           roomId: currentRoom.id,
           content,
-          senderUserId: 'local-user',
-          senderDisplayName: 'Michel (You)',
+          senderUserId: localProfile?.id ?? 'local-user',
+          senderDisplayName: localProfile ? `${localProfile.displayName} (You)` : 'You',
+          abortSignal: abortController.signal,
+          onChunk: (instanceName, chunk) => {
+            liveStreamRef.current = {
+              ...liveStreamRef.current,
+              [instanceName]: (liveStreamRef.current[instanceName] ?? '') + chunk,
+            };
+          },
+          onTurnComplete: (instanceName) => {
+            const next = { ...liveStreamRef.current };
+            delete next[instanceName];
+            liveStreamRef.current = next;
+          },
         });
         setMessages(result.messages);
         const reason = result.deliveryTrace?.reasonCode || 'executed';
@@ -280,8 +390,8 @@ export const TuiApp: React.FC<TuiOptions> = ({ initialView = 'dashboard', initia
         const msg = await manager.postMessage({
           roomId: currentRoom.id,
           senderType: 'user',
-          senderId: 'local-user',
-          senderDisplayName: 'Michel (You)',
+          senderId: localProfile?.id ?? 'local-user',
+          senderDisplayName: localProfile ? `${localProfile.displayName} (You)` : 'You',
           content,
         });
         setMessages((prev) => [...prev, msg]);
@@ -290,6 +400,7 @@ export const TuiApp: React.FC<TuiOptions> = ({ initialView = 'dashboard', initia
     } catch (err) {
       setStatusMessage(`✖ Error executing turn: ${(err as Error).message}`);
     } finally {
+      runAbortRef.current = null;
       setIsOrchestrating(false);
     }
   };
@@ -433,7 +544,7 @@ export const TuiApp: React.FC<TuiOptions> = ({ initialView = 'dashboard', initia
             <Text bold color="yellow">
               💬 Chat Rooms & Routing Settings ({rooms.length})
             </Text>
-            <Text dimColor>[↑/↓:Select | s:Switch Chat Room | d:Set Default Agent]</Text>
+            <Text dimColor>[↑/↓:Select | s:Switch Chat Room | d:Set Default Agent | x:Delete Room]</Text>
           </Box>
           {rooms.map((room, idx) => {
             const isSelected = idx === selectedRoomIndex;
@@ -476,27 +587,70 @@ export const TuiApp: React.FC<TuiOptions> = ({ initialView = 'dashboard', initia
             </Text>
             <Text dimColor>Default Agent: {currentRoom?.defaultAgentInstanceId || 'none'}</Text>
           </Box>
-          <Box
-            flexDirection="column"
-            height={10}
-            borderStyle="single"
-            borderColor="gray"
-            padding={1}
-            marginBottom={1}
-          >
-            {messages.length === 0 ? (
-              <Text dimColor>No messages in this room yet. Press "i" to write a prompt!</Text>
-            ) : (
-              messages.map((m) => (
-                <Text key={m.id}>
-                  <Text bold color={m.senderType === 'user' ? 'cyan' : m.contentType === 'system' ? 'yellow' : 'green'}>
-                    [{m.senderDisplayName}]:
+          {(() => {
+            const termCols = stdout?.columns ?? 80;
+            const termRows = stdout?.rows ?? 24;
+            const chatWidth = Math.max(20, termCols - 10);
+            const chatHeight = Math.max(6, Math.min(termRows - 16, 40));
+
+            const senderColorByName = new Map<string, string>();
+            for (const m of messages) {
+              senderColorByName.set(
+                m.senderDisplayName,
+                m.senderType === 'user' ? 'cyan' : m.contentType === 'system' ? 'yellow' : 'green'
+              );
+            }
+
+            const lines = messages.flatMap((m) =>
+              formatMessageLines({ senderDisplayName: m.senderDisplayName, content: m.content }, chatWidth)
+            );
+            for (const [name, text] of Object.entries(liveStream)) {
+              if (text) {
+                senderColorByName.set(`${name} ⚡`, 'magenta');
+                lines.push(...formatMessageLines({ senderDisplayName: `${name} ⚡`, content: text }, chatWidth));
+              }
+            }
+
+            chatScrollMaxRef.current = maxScrollOffset(lines.length, chatHeight);
+            chatPageRef.current = Math.max(1, chatHeight - 1);
+            const slice = sliceViewport(lines, scrollOffset, chatHeight);
+
+            const renderChatLine = (line: string, key: number) => {
+              const match = line.match(/^\[(.+?)\]: /);
+              if (!match) return <Text key={key}>{line || ' '}</Text>;
+              const color = senderColorByName.get(match[1]!) || 'green';
+              return (
+                <Text key={key}>
+                  <Text bold color={color}>
+                    [{match[1]}]:
                   </Text>{' '}
-                  {m.content}
+                  {line.slice(match[0].length)}
                 </Text>
-              ))
-            )}
-          </Box>
+              );
+            };
+
+            return (
+              <Box
+                flexDirection="column"
+                borderStyle="single"
+                borderColor="gray"
+                paddingX={1}
+                marginBottom={1}
+              >
+                <Text dimColor>
+                  {slice.hiddenAbove > 0 ? `↑ ${slice.hiddenAbove} more line(s) — ↑/PgUp scrolls, g = top` : ' '}
+                </Text>
+                {lines.length === 0 ? (
+                  <Text dimColor>No messages in this room yet. Press "i" to write a prompt!</Text>
+                ) : (
+                  slice.visible.map((line, i) => renderChatLine(line, slice.hiddenAbove + i))
+                )}
+                <Text dimColor>
+                  {slice.hiddenBelow > 0 ? `↓ ${slice.hiddenBelow} more line(s) — ↓/PgDn scrolls, G = latest` : ' '}
+                </Text>
+              </Box>
+            );
+          })()}
           <Box>
             <Text bold color={isInputFocused ? 'green' : 'gray'}>
               Prompt {isInputFocused ? '[Typing >]' : '[Press "i" to type] >'}{' '}

@@ -5,7 +5,10 @@ export * from './agent-deck-manager.js';
 export * from './orchestration-engine.js';
 export * from './chat-service.js';
 export * from './plugin-loader.js';
+export * from './plugin-installer.js';
 
 export * from './provider-catalog.js';
 export * from './routing-service.js';
 export * from './interop-guardrails.js';
+export * from './run-control.js';
+export * from './run-helpers.js';

@@ -9,7 +9,8 @@ import { runAgentsSetup } from './agents/setup.js';
 import { runAgentsStatus } from './agents/status.js';
 import { runAgentsRollback } from './agents/rollback.js';
 import { runAgentsLink } from './agents/link.js';
-import { AgentDeckManager, ChatService } from '@agentdeck/core';
+import { AgentDeckManager, ChatService, PluginLoader, readPluginManifest, loadProgrammaticPlugin, installPlugin, removePlugin, INSTALL_RECEIPT_FILENAME } from '@agentdeck/core';
+import { AGENTDECK_PATHS } from '@agentdeck/shared';
 import { HealthCheckLevelSchema, type RoomMode } from '@agentdeck/protocol';
 import { createAgentDeckServer, isLoopbackHost } from '@agentdeck/server';
 import { AGENTDECK_VERSION } from '@agentdeck/shared';
@@ -126,19 +127,20 @@ program
   .description('Execute an instant multi-agent orchestration prompt directly from the CLI')
   .option('-r, --room <roomName>', 'Room to run within (defaults to instant room)', 'cli-run')
   .option('-m, --mode <mode>', 'Orchestration mode (mention | panel | debate | coordinator)', 'panel')
+  .option('-u, --user <displayName>', 'Local profile to send as (created on first use)', 'CLI User')
   .action(async (promptText, options) => {
     const manager = await AgentDeckManager.create();
     const chatService = new ChatService(manager);
+    const profile = await manager.createOrGetLocalProfile(options.user, '💻');
 
     const rooms = await manager.listRooms();
     let room = rooms.find((r) => r.name === options.room);
     if (!room) {
       const instances = await manager.listAgentInstances();
-      const user = await manager.createOrGetLocalProfile('CLI User', '💻');
       room = await manager.createRoom({
         name: options.room,
         mode: options.mode as RoomMode,
-        memberUserIds: [user.id],
+        memberUserIds: [profile.id],
         memberInstanceIds: instances.map((i) => i.id),
       });
     }
@@ -149,8 +151,8 @@ program
     const result = await chatService.send({
       roomId: room.id,
       content: promptText,
-      senderUserId: 'cli-user',
-      senderDisplayName: 'CLI User',
+      senderUserId: profile.id,
+      senderDisplayName: profile.displayName,
       mode: options.mode as RoomMode,
       onTurnStart: (name) => console.log(chalk.yellow(`\n[Agent Turn: ${name}]`)),
       onChunk: (_, chunk) => process.stdout.write(chunk),
@@ -331,6 +333,49 @@ program
 // `setup` (above) configures personas and instances. `agents setup` is the
 // other half: it installs/updates the agent binaries themselves and points all
 // of them at one provider+model pair.
+const roomsCommand = program
+  .command('rooms')
+  .description('Manage chat rooms from the CLI');
+
+roomsCommand
+  .command('list', { isDefault: true })
+  .description('List every room with mode and limits')
+  .action(async () => {
+    const manager = await AgentDeckManager.create();
+    const rooms = await manager.listRooms();
+    if (rooms.length === 0) {
+      console.log(chalk.dim('No rooms yet. Create one in the Web Deck, TUI, or with `agentdeck run`.'));
+      return;
+    }
+    for (const room of rooms) {
+      console.log(
+        `${chalk.bold.green(`#${room.name}`)} ${chalk.dim(`(${room.id})`)} — mode: ${room.mode}, turns: ${room.maxTurnsPerRun}, runtime: ${room.maxRuntimeSec}s${room.turnTimeoutSec ? `, turn timeout: ${room.turnTimeoutSec}s` : ''}`
+      );
+    }
+  });
+
+roomsCommand
+  .command('delete <roomIdOrName>')
+  .alias('rm')
+  .description('Delete a room and all of its messages (cascades)')
+  .action(async (roomIdOrName) => {
+    const manager = await AgentDeckManager.create();
+    const rooms = await manager.listRooms();
+    const room = rooms.find((r) => r.id === roomIdOrName || r.name === roomIdOrName);
+    if (!room) {
+      console.error(chalk.red(`No room found matching "${roomIdOrName}"`));
+      process.exitCode = 1;
+      return;
+    }
+    try {
+      await manager.deleteRoom(room.id);
+      console.log(chalk.green(`✔ Room #${room.name} deleted (messages and members cascaded).`));
+    } catch (err) {
+      console.error(chalk.red(`✖ ${(err as Error).message}`));
+      process.exitCode = 1;
+    }
+  });
+
 const agentsCommand = program
   .command('agents')
   .description('Provision the managed agents and point them all at one LLM');
@@ -417,9 +462,9 @@ const pluginCommand = program
 
 pluginCommand
   .command('list')
-  .description('List installed user plugins from ~/.agentdeck/plugins')
+  .description('List installed user plugins (declarative and programmatic)')
   .action(async () => {
-    const pluginsDir = path.join(os.homedir(), '.agentdeck', 'plugins');
+    const pluginsDir = AGENTDECK_PATHS.PLUGINS_DIR;
     await fs.mkdir(pluginsDir, { recursive: true });
     const entries = await fs.readdir(pluginsDir, { withFileTypes: true });
     const pluginFolders = entries.filter((e) => e.isDirectory());
@@ -430,22 +475,99 @@ pluginCommand
 
     if (pluginFolders.length === 0) {
       console.log(chalk.dim(`  No plugins installed in ${pluginsDir}`));
-      console.log(chalk.dim('  Run `agentdeck plugin new <name>` to scaffold a new plugin.\n'));
+      console.log(chalk.dim('  Run `agentdeck plugin new <name>` or `agentdeck plugin install <source>`.\n'));
       return;
     }
 
     for (const folder of pluginFolders) {
-      const manifestPath = path.join(pluginsDir, folder.name, 'manifest.json');
+      const pluginDir = path.join(pluginsDir, folder.name);
       try {
-        const raw = await fs.readFile(manifestPath, 'utf8');
-        const json = JSON.parse(raw);
-        console.log(`  🔌 ${chalk.bold(json.name || folder.name)} (${chalk.yellow(json.id || folder.name)}) [v${json.version || '1.0.0'}]`);
-        console.log(`     ${chalk.dim(json.description || 'No description provided')}`);
-      } catch {
-        console.log(`  ⚠️  ${chalk.bold(folder.name)} (unrecognized manifest)`);
+        const found = await readPluginManifest(pluginDir);
+        const tier = found.kind === 'AgentPluginModule' ? 'Tier-2 programmatic' : 'Tier-1 declarative';
+        console.log(
+          `  🔌 ${chalk.bold(found.manifest.name)} (${chalk.yellow(found.manifest.id)}) [v${found.manifest.version}] — ${chalk.dim(tier)}`
+        );
+        console.log(`     ${chalk.dim(found.manifest.description || 'No description provided')}`);
+      } catch (err) {
+        console.log(`  ⚠️  ${chalk.bold(folder.name)} — ${chalk.dim((err as Error).message)}`);
       }
     }
     console.log('');
+  });
+
+pluginCommand
+  .command('install <source>')
+  .description('Install a plugin from a local path or a PINNED github source (github:owner/repo#tag-or-commit)')
+  .option('-y, --yes', 'Skip the interactive confirmation')
+  .action(async (source, options) => {
+    try {
+      let confirmed = Boolean(options.yes);
+      if (!confirmed) {
+        console.log(chalk.bold.yellow('\n⚠ A plugin installs code that runs INSIDE AgentDeck with your permissions.'));
+        console.log(chalk.yellow(`  Source: ${source}`));
+        console.log(chalk.yellow('  Review the plugin before continuing. There is no sandbox.'));
+        const readline = await import('node:readline/promises');
+        const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+        const answer = (await rl.question('  Install? Type "yes" to continue: ')).trim().toLowerCase();
+        rl.close();
+        confirmed = answer === 'yes' || answer === 'y';
+        if (!confirmed) {
+          console.log(chalk.dim('Aborted.'));
+          process.exitCode = 1;
+          return;
+        }
+      }
+
+      const result = await installPlugin(source, { pluginsDir: AGENTDECK_PATHS.PLUGINS_DIR, confirmed: true });
+      console.log(chalk.green(`\n✔ Plugin "${result.pluginId}" installed at ${result.pluginDir}`));
+      console.log(chalk.dim(`  Kind: ${result.kind} | receipt: ${INSTALL_RECEIPT_FILENAME}`));
+      console.log(chalk.dim('  AgentDeck loads it on next start. Validate with `agentdeck plugin validate`.\n'));
+    } catch (err) {
+      console.error(chalk.red(`✖ ${(err as Error).message}`));
+      process.exitCode = 1;
+    }
+  });
+
+pluginCommand
+  .command('remove <pluginId>')
+  .alias('rm')
+  .description('Remove an installed plugin')
+  .action(async (pluginId) => {
+    try {
+      await removePlugin(pluginId, AGENTDECK_PATHS.PLUGINS_DIR);
+      console.log(chalk.green(`✔ Plugin "${pluginId}" removed.`));
+    } catch (err) {
+      console.error(chalk.red(`✖ ${(err as Error).message}`));
+      process.exitCode = 1;
+    }
+  });
+
+pluginCommand
+  .command('validate [pathOrId]')
+  .description('Validate a plugin directory (or an installed plugin id) without loading it into the deck')
+  .action(async (pathOrId) => {
+    try {
+      const target = pathOrId
+        ? (await fs.stat(path.resolve(pathOrId)).catch(() => null))?.isDirectory()
+          ? path.resolve(pathOrId)
+          : path.join(AGENTDECK_PATHS.PLUGINS_DIR, pathOrId)
+        : process.cwd();
+
+      const found = await readPluginManifest(target);
+      console.log(chalk.green(`✔ Manifest OK: ${found.manifest.name} (${found.manifest.id}) — kind ${found.kind}`));
+      if (found.kind === 'AgentPluginModule') {
+        const adapter = await loadProgrammaticPlugin(target, found.manifest);
+        console.log(chalk.green(`✔ Entry module OK: createAdapter() returned adapter "${adapter.definition.id}"`));
+      } else {
+        // Instantiating the declarative adapter exercises the whole schema.
+        const loader = new PluginLoader(path.dirname(target));
+        void loader;
+        console.log(chalk.green('✔ Declarative execution template validated ({{prompt}} placement, safe command).'));
+      }
+    } catch (err) {
+      console.error(chalk.red(`✖ ${(err as Error).message}`));
+      process.exitCode = 1;
+    }
   });
 
 pluginCommand

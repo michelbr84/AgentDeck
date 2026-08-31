@@ -67,6 +67,8 @@ agentdeck tui
 ```
 Full-featured interactive terminal deck with keyboard navigation (Arrows/Enter/Tab), tabs for Dashboard, Agent Directory, Room Manager, Live Group Chat, and System Prompt Inspector.
 
+Chat view keys: `↑`/`↓` scroll one line, `PgUp`/`PgDn` scroll one page, `g`/`G` jump to the oldest/newest line, `i` or `Enter` focuses the input, and `ESC` stops a running orchestration (or unfocuses/exits when idle). Agent replies stream live into the viewport as they are generated.
+
 ### Web Deck UI
 ```bash
 agentdeck web --port 4321

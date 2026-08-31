@@ -195,8 +195,9 @@ export async function createAgentDeckServer(options?: ServerOptions): Promise<Ag
     });
   }
 
-  // Active connected websocket clients
+  // Active connected websocket clients, with optional per-socket room scoping
   const activeSockets = new Set<WebSocket>();
+  const socketRooms = new Map<WebSocket, string>();
 
   manager.eventBus.on('*', (envelope) => {
     // Every event-bus envelope passes through redactSecrets before hitting the
@@ -204,9 +205,18 @@ export async function createAgentDeckServer(options?: ServerOptions): Promise<Ag
     // SENSITIVE_KEY_PATTERNS list or they will be blanked here.
     const sanitizedEnvelope = redactSecrets(envelope);
     const messageStr = JSON.stringify(sanitizedEnvelope);
+    const envelopeRoomId =
+      (sanitizedEnvelope as { roomId?: string }).roomId ||
+      ((sanitizedEnvelope as { payload?: { message?: { roomId?: string } } }).payload?.message?.roomId ??
+        undefined);
 
     for (const socket of activeSockets) {
       if (socket.readyState === WebSocket.OPEN) {
+        // A socket that subscribed to a room only receives that room's events
+        // (run:chunk traffic would otherwise leak across every open deck).
+        // Events with no room context (agent upgrades, ...) go to everyone.
+        const subscribedRoom = socketRooms.get(socket);
+        if (subscribedRoom && envelopeRoomId && envelopeRoomId !== subscribedRoom) continue;
         try {
           socket.send(messageStr);
         } catch {
@@ -549,6 +559,42 @@ export async function createAgentDeckServer(options?: ServerOptions): Promise<Ag
     return redactSecrets(user);
   });
 
+  server.get('/api/v1/users/:id', async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const user = await manager.getUser(id);
+    if (!user) return reply.status(404).send({ error: `User with ID "${id}" not found` });
+    return redactSecrets(user);
+  });
+
+  server.put('/api/v1/users/:id', async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const body = req.body as {
+      displayName?: string;
+      avatar?: string;
+      email?: string | null;
+      preferences?: Record<string, unknown>;
+    };
+    const user = await manager.updateUser(id, body);
+    if (!user) return reply.status(404).send({ error: `User with ID "${id}" not found` });
+    return redactSecrets(user);
+  });
+
+  server.delete('/api/v1/users/:id', async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const user = await manager.getUser(id);
+    if (!user) return reply.status(404).send({ error: `User with ID "${id}" not found` });
+    await manager.deleteUser(id);
+    return { success: true };
+  });
+
+  // Requester identity for cooperative room-role checks: header or query.
+  const requesterId = (req: { headers: Record<string, unknown>; query: unknown }): string | undefined => {
+    const header = req.headers['x-agentdeck-user-id'];
+    if (typeof header === 'string' && header) return header;
+    const q = req.query as { actorId?: string } | undefined;
+    return q?.actorId || undefined;
+  };
+
   // Rooms
   server.get('/api/v1/rooms', async () => {
     const rooms = await manager.listRooms();
@@ -588,14 +634,27 @@ export async function createAgentDeckServer(options?: ServerOptions): Promise<Ag
       maxTurnsPerRun?: number;
       maxRuntimeSec?: number;
       maxCostUSD?: number;
+      turnTimeoutSec?: number;
       workspacePath?: string;
     };
+    await manager.assertRoomPermission(id, requesterId(req), 'edit');
     await manager.updateRoom(id, body);
     const updated = await manager.getRoom(id);
     if (!updated) {
       return reply.status(404).send({ error: `Room with ID ${id} not found` });
     }
     return redactSecrets(updated);
+  });
+
+  server.delete('/api/v1/rooms/:id', async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const room = await manager.getRoom(id);
+    if (!room) {
+      return reply.status(404).send({ error: `Room with ID ${id} not found` });
+    }
+    await manager.assertRoomPermission(id, requesterId(req), 'delete');
+    await manager.deleteRoom(id);
+    return { success: true };
   });
 
   server.post('/api/v1/rooms/:id/default-agent', async (req, reply) => {
@@ -628,14 +687,24 @@ export async function createAgentDeckServer(options?: ServerOptions): Promise<Ag
 
   server.delete('/api/v1/rooms/:id/members/:memberId', async (req) => {
     const { id, memberId } = req.params as { id: string; memberId: string };
+    await manager.assertRoomPermission(id, requesterId(req), 'edit');
     await manager.removeRoomMember(id, memberId);
     return { success: true };
   });
 
   server.get('/api/v1/rooms/:id/messages', async (req) => {
     const { id } = req.params as { id: string };
-    const msgs = await manager.getRoomMessages(id);
-    return redactSecrets(msgs);
+    const query = req.query as { limit?: string; before?: string; after?: string };
+    const paged = query.limit !== undefined || query.before !== undefined || query.after !== undefined;
+
+    // Back-compat: with no pagination params the response stays a bare array.
+    if (!paged) {
+      return redactSecrets(await manager.getRoomMessages(id));
+    }
+
+    const limit = Math.min(Math.max(1, Number(query.limit ?? 50) || 50), 100);
+    const page = await manager.getRoomMessages(id, { limit, before: query.before, after: query.after });
+    return redactSecrets(page);
   });
 
   server.post('/api/v1/rooms/:id/messages', async (req) => {
@@ -664,6 +733,27 @@ export async function createAgentDeckServer(options?: ServerOptions): Promise<Ag
       mode: body.mode,
     });
     return redactSecrets(result);
+  });
+
+  // Run abort controls: by runId (precise) or by room (no runId needed — the
+  // stop button can fire before any run:started event reaches the client).
+  server.post('/api/v1/runs/:runId/abort', async (req, reply) => {
+    const { runId } = req.params as { runId: string };
+    const aborted = manager.abortRun(runId);
+    if (!aborted) {
+      return reply.status(404).send({ error: `No active run "${runId}"` });
+    }
+    return { success: true, runId };
+  });
+
+  server.post('/api/v1/rooms/:id/abort', async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const room = await manager.getRoom(id);
+    if (!room) {
+      return reply.status(404).send({ error: `Room with ID "${id}" not found` });
+    }
+    const aborted = manager.abortRoomRuns(id);
+    return { success: true, aborted };
   });
 
   // Inspect Prompt (Non-destructive inspection with layer provenance & redactions)
@@ -733,6 +823,7 @@ export async function createAgentDeckServer(options?: ServerOptions): Promise<Ag
 
     socket.on('close', () => {
       activeSockets.delete(socket);
+      socketRooms.delete(socket);
     });
 
     socket.on('message', async (rawMsg) => {
@@ -740,6 +831,15 @@ export async function createAgentDeckServer(options?: ServerOptions): Promise<Ag
         const parsed = JSON.parse(rawMsg.toString('utf8'));
         if (parsed.type === 'ping') {
           socket.send(JSON.stringify({ type: 'pong', timestamp: new Date().toISOString() }));
+        } else if (parsed.type === 'run:abort' && typeof parsed.runId === 'string') {
+          const aborted = manager.abortRun(parsed.runId);
+          socket.send(JSON.stringify({ type: 'run:abort:ack', runId: parsed.runId, aborted }));
+        } else if (parsed.type === 'subscribe' && typeof parsed.roomId === 'string') {
+          socketRooms.set(socket, parsed.roomId);
+          socket.send(JSON.stringify({ type: 'subscribe:ack', roomId: parsed.roomId }));
+        } else if (parsed.type === 'unsubscribe') {
+          socketRooms.delete(socket);
+          socket.send(JSON.stringify({ type: 'unsubscribe:ack' }));
         }
       } catch {
         // Invalid json

@@ -617,7 +617,7 @@ export class GarraIAAdapter implements AgentAdapter, LlmConfigurable {
         stdin: promptText,
         cwd: context.workspaceDir || process.cwd(),
         abortSignal: context.abortSignal,
-        timeoutMs: 300000,
+        timeoutMs: context.turnRequest?.timeoutMs ?? 300000,
       },
       {
         onStdoutChunk: (chunk) => {

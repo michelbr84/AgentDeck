@@ -1,4 +1,4 @@
-import { AgentDeckDatabase, createDatabase } from '@agentdeck/database';
+import { AgentDeckDatabase, createDatabase, sql } from '@agentdeck/database';
 import { EventBus } from './event-bus.js';
 import { PromptComposer } from './prompt-composer.js';
 import { TransactionalUpgradeEngine } from './upgrade-engine.js';
@@ -22,11 +22,13 @@ import {
   UserProfile,
   Room,
   Message,
+  MessagePage,
   HealthCheckLevel,
   HealthReport,
   ChatDeliveryTrace,
 } from '@agentdeck/protocol';
 import { ensureSecureDirectory } from '@agentdeck/security';
+import { RunAbortError } from './run-control.js';
 import path from 'node:path';
 import os from 'node:os';
 import { isOutdated as isVersionOutdated } from '@agentdeck/adapters';
@@ -34,6 +36,85 @@ import { isOutdated as isVersionOutdated } from '@agentdeck/adapters';
 export interface ManagerOptions {
   db?: AgentDeckDatabase;
   eventBus?: EventBus;
+}
+
+export interface GetRoomMessagesOptions {
+  limit?: number;
+  /** Opaque cursor — return only messages strictly OLDER than this position. */
+  before?: string;
+  /** Opaque cursor — return only messages strictly NEWER than this position. */
+  after?: string;
+}
+
+/**
+ * SQLite's CURRENT_TIMESTAMP default stored `YYYY-MM-DD HH:MM:SS` (UTC, second
+ * granularity). New writes keep that shape but append milliseconds, so plain
+ * string ordering stays correct across legacy and new rows — an ISO `T`
+ * separator would sort AFTER every legacy timestamp of the same day.
+ */
+function sqliteTimestamp(date: Date): string {
+  return date.toISOString().replace('T', ' ').replace('Z', '');
+}
+
+/**
+ * Messages posted within the same clock millisecond would otherwise tie on
+ * created_at and fall back to the random id suffix, scrambling display order.
+ * A per-process monotonic clock guarantees each post gets a strictly greater
+ * timestamp (drifting at most a few ms ahead under bursts).
+ */
+let lastMessageTimestampMs = 0;
+function nextMessageDate(): Date {
+  const now = Date.now();
+  lastMessageTimestampMs = now > lastMessageTimestampMs ? now : lastMessageTimestampMs + 1;
+  return new Date(lastMessageTimestampMs);
+}
+
+/** Normalizes a stored timestamp (either shape) back to ISO-8601 UTC. */
+function isoTimestamp(raw: string): string {
+  return raw.includes('T') ? raw : `${raw.replace(' ', 'T')}Z`;
+}
+
+interface MessageCursor {
+  createdAt: string;
+  turnIndex: number;
+  id: string;
+}
+
+interface MessageRow {
+  id: string;
+  room_id: string;
+  thread_id: string | null;
+  sender_type: string;
+  sender_id: string;
+  sender_display_name: string;
+  content: string;
+  content_type: string;
+  turn_index: number | null;
+  delivery_trace_json: string | null;
+  raw_payload_json: string | null;
+  created_at: string;
+}
+
+function encodeMessageCursor(cursor: MessageCursor): string {
+  return Buffer.from(JSON.stringify([cursor.createdAt, cursor.turnIndex, cursor.id]), 'utf8').toString('base64url');
+}
+
+function decodeMessageCursor(cursor: string): MessageCursor {
+  try {
+    const parsed = JSON.parse(Buffer.from(cursor, 'base64url').toString('utf8')) as unknown;
+    if (
+      Array.isArray(parsed) &&
+      parsed.length === 3 &&
+      typeof parsed[0] === 'string' &&
+      typeof parsed[1] === 'number' &&
+      typeof parsed[2] === 'string'
+    ) {
+      return { createdAt: parsed[0], turnIndex: parsed[1], id: parsed[2] };
+    }
+  } catch {
+    // fall through to the shared error below
+  }
+  throw Object.assign(new Error('Invalid message cursor'), { statusCode: 400, code: 'INVALID_CURSOR' });
 }
 
 export class AgentDeckManager {
@@ -44,6 +125,54 @@ export class AgentDeckManager {
   public readonly orchestrationEngine: MultiAgentOrchestrationEngine;
 
   private adapterRegistry = new Map<string, AgentAdapter>();
+
+  /** Live orchestration runs, so REST/WS/UIs can reach a run's abort signal. */
+  private activeRuns = new Map<string, { controller: AbortController; roomId: string }>();
+
+  // TTL cache for "latest version" lookups, shared across manager instances.
+  // A successful lookup is good for an hour. An unknown answer — the adapter
+  // threw, or reported `latestVersion: null` — is kept only briefly: long
+  // enough not to hammer the network on every scan, short enough to recover.
+  // `isOutdated(v, null)` is always false, so remembering a failure for the
+  // full hour would pin every agent to "up to date" after one network blip.
+  private static versionCache = new Map<string, { result: { latestVersion: string | null }; expiresAt: number }>();
+  public static readonly VERSION_CACHE_TTL_MS = 60 * 60 * 1000; // 1 hour
+  public static readonly VERSION_FAILURE_TTL_MS = 60 * 1000; // 1 minute
+
+  /**
+   * Drops the cached latest-version lookup for one adapter, or for all of them
+   * when no id is given, so the next scan fetches it again. Call after anything
+   * that changes what is installed (install, upgrade); otherwise
+   * `version_latest` and the outdated flag can lag the user's own action by up
+   * to an hour.
+   */
+  public static invalidateVersionCache(adapterId?: string): void {
+    if (adapterId === undefined) {
+      AgentDeckManager.versionCache.clear();
+    } else {
+      AgentDeckManager.versionCache.delete(adapterId);
+    }
+  }
+
+  private async getCachedLatestVersion(adapter: AgentAdapter): Promise<{ latestVersion: string | null }> {
+    const key = adapter.definition.id;
+    const cached = AgentDeckManager.versionCache.get(key);
+    if (cached && cached.expiresAt > Date.now()) {
+      return cached.result;
+    }
+    let result: { latestVersion: string | null };
+    try {
+      result = await adapter.getLatestVersion();
+    } catch {
+      result = { latestVersion: null };
+    }
+    const ttl =
+      result.latestVersion === null
+        ? AgentDeckManager.VERSION_FAILURE_TTL_MS
+        : AgentDeckManager.VERSION_CACHE_TTL_MS;
+    AgentDeckManager.versionCache.set(key, { result, expiresAt: Date.now() + ttl });
+    return result;
+  }
 
   private constructor(db: AgentDeckDatabase, eventBus?: EventBus) {
     this.db = db;
@@ -104,51 +233,6 @@ export class AgentDeckManager {
 
   public async listPlugins(): Promise<AgentAdapter[]> {
     return Array.from(this.adapterRegistry.values());
-  }
-
-  // TTL cache for "latest version" lookups, shared across manager instances.
-  // A successful lookup is good for an hour. An unknown answer — the adapter
-  // threw, or reported `latestVersion: null` — is kept only briefly: long
-  // enough not to hammer the network on every scan, short enough to recover.
-  // `isOutdated(v, null)` is always false, so remembering a failure for the
-  // full hour would pin every agent to "up to date" after one network blip.
-  private static versionCache = new Map<string, { result: { latestVersion: string | null }; expiresAt: number }>();
-  public static readonly VERSION_CACHE_TTL_MS = 60 * 60 * 1000; // 1 hour
-  public static readonly VERSION_FAILURE_TTL_MS = 60 * 1000; // 1 minute
-
-  /**
-   * Drops the cached latest-version lookup for one adapter, or for all of them
-   * when no id is given, so the next scan fetches it again. Call after anything
-   * that changes what is installed (install, upgrade); otherwise
-   * `version_latest` and the outdated flag can lag the user's own action by up
-   * to an hour.
-   */
-  public static invalidateVersionCache(adapterId?: string): void {
-    if (adapterId === undefined) {
-      AgentDeckManager.versionCache.clear();
-    } else {
-      AgentDeckManager.versionCache.delete(adapterId);
-    }
-  }
-
-  private async getCachedLatestVersion(adapter: AgentAdapter): Promise<{ latestVersion: string | null }> {
-    const key = adapter.definition.id;
-    const cached = AgentDeckManager.versionCache.get(key);
-    if (cached && cached.expiresAt > Date.now()) {
-      return cached.result;
-    }
-    let result: { latestVersion: string | null };
-    try {
-      result = await adapter.getLatestVersion();
-    } catch {
-      result = { latestVersion: null };
-    }
-    const ttl =
-      result.latestVersion === null
-        ? AgentDeckManager.VERSION_FAILURE_TTL_MS
-        : AgentDeckManager.VERSION_CACHE_TTL_MS;
-    AgentDeckManager.versionCache.set(key, { result, expiresAt: Date.now() + ttl });
-    return result;
   }
 
   /**
@@ -627,6 +711,261 @@ export class AgentDeckManager {
     };
   }
 
+  public async getUser(id: string): Promise<UserProfile | null> {
+    const r = await this.db.db.selectFrom('users').selectAll().where('id', '=', id).executeTakeFirst();
+    if (!r) return null;
+    return {
+      id: r.id,
+      type: r.type as 'local_profile',
+      displayName: r.display_name,
+      avatar: r.avatar,
+      email: r.email || undefined,
+      publicKey: r.public_key || undefined,
+      preferences: JSON.parse(r.preferences_json || '{}'),
+      createdAt: r.created_at,
+      updatedAt: r.updated_at,
+    };
+  }
+
+  public async updateUser(
+    id: string,
+    updates: { displayName?: string; avatar?: string; email?: string | null; preferences?: Record<string, unknown> }
+  ): Promise<UserProfile | null> {
+    const patch: Record<string, unknown> = { updated_at: new Date().toISOString() };
+    if (updates.displayName !== undefined) patch['display_name'] = updates.displayName;
+    if (updates.avatar !== undefined) patch['avatar'] = updates.avatar;
+    if (updates.email !== undefined) patch['email'] = updates.email;
+    if (updates.preferences !== undefined) patch['preferences_json'] = JSON.stringify(updates.preferences);
+
+    await this.db.db.updateTable('users').set(patch as never).where('id', '=', id).execute();
+    return this.getUser(id);
+  }
+
+  public async deleteUser(id: string): Promise<void> {
+    // Messages and room memberships keep their (now dangling) sender ids —
+    // the same legacy-tolerant posture as the synthetic 'user-default' ids.
+    await this.db.db.deleteFrom('room_members').where('member_type', '=', 'user').where('member_id', '=', id).execute();
+    await this.db.db.deleteFrom('users').where('id', '=', id).execute();
+  }
+
+  // ==========================================
+  // PERSISTENCE: ORCHESTRATION RUNS
+  // ==========================================
+  public async createOrchestrationRun(params: {
+    roomId: string;
+    triggerMessageId?: string;
+  }): Promise<string> {
+    const id = `run-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`;
+    await this.db.db
+      .insertInto('orchestration_runs')
+      .values({
+        id,
+        room_id: params.roomId,
+        trigger_message_id: params.triggerMessageId || null,
+        status: 'running',
+        turns_executed: 0,
+        tokens_used_json: '{}',
+        cost_usd_json: '{}',
+        started_at: new Date().toISOString(),
+      })
+      .execute();
+    return id;
+  }
+
+  public async finalizeOrchestrationRun(params: {
+    runId: string;
+    status: 'completed' | 'cancelled' | 'failed';
+    turnsExecuted: number;
+    tokensUsed: number;
+    costUSD: number;
+  }): Promise<void> {
+    await this.db.db
+      .updateTable('orchestration_runs')
+      .set({
+        status: params.status,
+        turns_executed: params.turnsExecuted,
+        tokens_used_json: JSON.stringify({ total: params.tokensUsed }),
+        cost_usd_json: JSON.stringify({ total: params.costUSD }),
+        finished_at: new Date().toISOString(),
+      })
+      .where('id', '=', params.runId)
+      .execute();
+  }
+
+  public async listRuns(roomId?: string): Promise<Array<{
+    id: string;
+    roomId: string;
+    status: string;
+    turnsExecuted: number;
+    tokensUsed: number;
+    costUSD: number;
+    startedAt: string;
+    finishedAt: string | null;
+  }>> {
+    let query = this.db.db.selectFrom('orchestration_runs').selectAll();
+    if (roomId) {
+      query = query.where('room_id', '=', roomId);
+    }
+    const rows = await query.orderBy('started_at', 'desc').execute();
+    return rows.map((r) => ({
+      id: r.id,
+      roomId: r.room_id,
+      status: r.status,
+      turnsExecuted: r.turns_executed,
+      tokensUsed: JSON.parse(r.tokens_used_json).total ?? 0,
+      costUSD: JSON.parse(r.cost_usd_json).total ?? 0,
+      startedAt: r.started_at,
+      finishedAt: r.finished_at,
+    }));
+  }
+
+  // ==========================================
+  // PERSISTENCE: AUDIT LOGS & BACKUPS
+  // ==========================================
+  public async writeAuditLog(params: {
+    eventType: string;
+    actorType: string;
+    actorId: string;
+    action: string;
+    resource: string;
+    status: string;
+    details?: Record<string, unknown>;
+  }): Promise<void> {
+    try {
+      const id = `audit-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`;
+      await this.db.db
+        .insertInto('audit_logs')
+        .values({
+          id,
+          event_type: params.eventType,
+          actor_type: params.actorType,
+          actor_id: params.actorId,
+          action: params.action,
+          resource: params.resource,
+          status: params.status,
+          details_json: JSON.stringify(params.details || {}),
+        })
+        .execute();
+    } catch {
+      // Audit log writes must never fail the caller
+    }
+  }
+
+  public async listAuditLogs(): Promise<Array<{
+    id: string;
+    eventType: string;
+    actorType: string;
+    actorId: string;
+    action: string;
+    resource: string;
+    status: string;
+    details: Record<string, unknown>;
+    createdAt: string;
+  }>> {
+    const rows = await this.db.db
+      .selectFrom('audit_logs')
+      .selectAll()
+      .orderBy('created_at', 'desc')
+      .limit(500)
+      .execute();
+    return rows.map((r) => ({
+      id: r.id,
+      eventType: r.event_type,
+      actorType: r.actor_type,
+      actorId: r.actor_id,
+      action: r.action,
+      resource: r.resource,
+      status: r.status,
+      details: JSON.parse(r.details_json),
+      createdAt: r.created_at,
+    }));
+  }
+
+  public async recordBackup(params: {
+    agentDefinitionId: string;
+    backupPath: string;
+    versionBefore: string;
+    metadata: Record<string, unknown>;
+  }): Promise<string> {
+    const id = `backup-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`;
+    await this.db.db
+      .insertInto('backups')
+      .values({
+        id,
+        agent_definition_id: params.agentDefinitionId,
+        backup_path: params.backupPath,
+        version_before: params.versionBefore,
+        metadata_json: JSON.stringify(params.metadata),
+      })
+      .execute();
+    return id;
+  }
+
+  public async listBackups(): Promise<Array<{
+    id: string;
+    agentDefinitionId: string;
+    backupPath: string;
+    versionBefore: string;
+    metadata: Record<string, unknown>;
+    createdAt: string;
+  }>> {
+    const rows = await this.db.db
+      .selectFrom('backups')
+      .selectAll()
+      .orderBy('created_at', 'desc')
+      .execute();
+    return rows.map((r) => ({
+      id: r.id,
+      agentDefinitionId: r.agent_definition_id,
+      backupPath: r.backup_path,
+      versionBefore: r.version_before,
+      metadata: JSON.parse(r.metadata_json),
+      createdAt: r.created_at,
+    }));
+  }
+
+  // ==========================================
+  // ACTIVE RUN REGISTRY (abort controls)
+  // ==========================================
+  public registerRun(runId: string, roomId: string, controller: AbortController): void {
+    this.activeRuns.set(runId, { controller, roomId });
+  }
+
+  public unregisterRun(runId: string): void {
+    this.activeRuns.delete(runId);
+  }
+
+  /** Aborts one run. Returns false when the run is unknown or already done. */
+  public abortRun(runId: string): boolean {
+    const run = this.activeRuns.get(runId);
+    if (!run) return false;
+    run.controller.abort(new RunAbortError());
+    return true;
+  }
+
+  /** Aborts every live run in a room; returns how many were signalled. */
+  public abortRoomRuns(roomId: string): number {
+    let aborted = 0;
+    for (const run of this.activeRuns.values()) {
+      if (run.roomId === roomId) {
+        run.controller.abort(new RunAbortError());
+        aborted++;
+      }
+    }
+    return aborted;
+  }
+
+  public hasActiveRunForRoom(roomId: string): boolean {
+    for (const run of this.activeRuns.values()) {
+      if (run.roomId === roomId) return true;
+    }
+    return false;
+  }
+
+  public listActiveRuns(): Array<{ runId: string; roomId: string }> {
+    return Array.from(this.activeRuns.entries(), ([runId, run]) => ({ runId, roomId: run.roomId }));
+  }
+
   // ==========================================
   // ROOMS & MESSAGING
   // ==========================================
@@ -641,6 +980,7 @@ export class AgentDeckManager {
       maxTurnsPerRun: r.turn_limit,
       maxRuntimeSec: r.runtime_limit_sec,
       maxCostUSD: r.cost_limit_usd || undefined,
+      turnTimeoutSec: r.turn_timeout_sec || undefined,
       workspacePath: r.workspace_path || undefined,
       createdAt: r.created_at,
       updatedAt: r.updated_at,
@@ -659,6 +999,7 @@ export class AgentDeckManager {
       maxTurnsPerRun: r.turn_limit,
       maxRuntimeSec: r.runtime_limit_sec,
       maxCostUSD: r.cost_limit_usd || undefined,
+      turnTimeoutSec: r.turn_timeout_sec || undefined,
       workspacePath: r.workspace_path || undefined,
       createdAt: r.created_at,
       updatedAt: r.updated_at,
@@ -676,6 +1017,7 @@ export class AgentDeckManager {
     maxTurnsPerRun?: number;
     maxRuntimeSec?: number;
     maxCostUSD?: number;
+    turnTimeoutSec?: number;
   }): Promise<Room> {
     const id = `room-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`;
     const now = new Date().toISOString();
@@ -691,6 +1033,7 @@ export class AgentDeckManager {
         turn_limit: params.maxTurnsPerRun ?? 10,
         runtime_limit_sec: params.maxRuntimeSec ?? 600,
         cost_limit_usd: params.maxCostUSD ?? null,
+        turn_timeout_sec: params.turnTimeoutSec ?? null,
         workspace_path: params.workspacePath || null,
       })
       .execute();
@@ -735,6 +1078,7 @@ export class AgentDeckManager {
       maxTurnsPerRun: params.maxTurnsPerRun ?? 10,
       maxRuntimeSec: params.maxRuntimeSec ?? 600,
       maxCostUSD: params.maxCostUSD,
+      turnTimeoutSec: params.turnTimeoutSec,
       workspacePath: params.workspacePath,
       createdAt: now,
       updatedAt: now,
@@ -752,6 +1096,7 @@ export class AgentDeckManager {
       maxTurnsPerRun?: number;
       maxRuntimeSec?: number;
       maxCostUSD?: number | null;
+      turnTimeoutSec?: number | null;
     }
   ): Promise<void> {
     const patch: Record<string, unknown> = {
@@ -765,11 +1110,78 @@ export class AgentDeckManager {
     if (updates.maxTurnsPerRun !== undefined) patch['turn_limit'] = updates.maxTurnsPerRun;
     if (updates.maxRuntimeSec !== undefined) patch['runtime_limit_sec'] = updates.maxRuntimeSec;
     if (updates.maxCostUSD !== undefined) patch['cost_limit_usd'] = updates.maxCostUSD;
+    if (updates.turnTimeoutSec !== undefined) patch['turn_timeout_sec'] = updates.turnTimeoutSec;
 
     await this.db.db
       .updateTable('rooms')
       .set(patch as never)
       .where('id', '=', id)
+      .execute();
+
+    this.eventBus.emit('room:updated', { roomId: id }, { roomId: id });
+  }
+
+  public async deleteRoom(id: string): Promise<void> {
+    if (this.hasActiveRunForRoom(id)) {
+      const err = new Error(
+        `Cannot delete room "${id}" while an orchestration run is active. Stop the run first.`
+      );
+      (err as unknown as Record<string, unknown>).code = 'ROOM_RUN_ACTIVE';
+      (err as unknown as Record<string, unknown>).statusCode = 409;
+      throw err;
+    }
+    // room_members, messages and orchestration_runs all declare
+    // ON DELETE CASCADE and foreign_keys is ON, so one delete cleans up.
+    await this.db.db.deleteFrom('rooms').where('id', '=', id).execute();
+    this.eventBus.emit('room:deleted', { roomId: id }, { roomId: id });
+  }
+
+  /**
+   * Cooperative role check for room mutations. Without a requester identity
+   * (legacy callers) nothing is enforced; with one, rooms that record human
+   * members require owner/admin. This is a UX guard on a single-token deck,
+   * not a security boundary — see docs/security-model.md.
+   */
+  public async assertRoomPermission(
+    roomId: string,
+    userId: string | undefined,
+    action: 'edit' | 'delete'
+  ): Promise<void> {
+    if (!userId) return;
+    const members = await this.listRoomMembers(roomId);
+    const userMembers = members.filter((m) => m.memberType === 'user');
+    if (userMembers.length === 0) return;
+    const me = userMembers.find((m) => m.memberId === userId);
+    if (me && (me.role === 'owner' || me.role === 'admin')) return;
+    const err = new Error(
+      `User "${userId}" cannot ${action} this room (role: ${me?.role ?? 'not a member'}). Owner or admin required.`
+    );
+    (err as unknown as Record<string, unknown>).code = 'ROOM_PERMISSION_DENIED';
+    (err as unknown as Record<string, unknown>).statusCode = 403;
+    throw err;
+  }
+
+  /** Upserts a known user as a room participant (no-op for synthetic ids). */
+  public async ensureRoomUserMember(roomId: string, userId: string): Promise<void> {
+    const user = await this.db.db.selectFrom('users').select('id').where('id', '=', userId).executeTakeFirst();
+    if (!user) return;
+    const existing = await this.db.db
+      .selectFrom('room_members')
+      .select('id')
+      .where('room_id', '=', roomId)
+      .where('member_type', '=', 'user')
+      .where('member_id', '=', userId)
+      .executeTakeFirst();
+    if (existing) return;
+    await this.db.db
+      .insertInto('room_members')
+      .values({
+        id: `rm-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
+        room_id: roomId,
+        member_type: 'user',
+        member_id: userId,
+        role: 'participant',
+      })
       .execute();
   }
 
@@ -842,16 +1254,90 @@ export class AgentDeckManager {
       .execute();
   }
 
-  public async getRoomMessages(roomId: string, limit = 50): Promise<Message[]> {
-    const rows = await this.db.db
-      .selectFrom('messages')
-      .selectAll()
-      .where('room_id', '=', roomId)
-      .orderBy('created_at', 'asc')
-      .limit(limit)
+  /**
+   * Returns the newest window of a room's history in ascending display order.
+   * The positional-number form keeps the historical `Message[]` shape; the
+   * options form adds keyset pagination (`before` pages older, `after` pages
+   * newer) and returns a `MessagePage` envelope. Ordering — and the cursor —
+   * is the triple (created_at, turn_index, id) so concurrent same-timestamp
+   * turns page without gaps or duplicates.
+   */
+  public async getRoomMessages(roomId: string, limit?: number): Promise<Message[]>;
+  public async getRoomMessages(roomId: string, opts: GetRoomMessagesOptions): Promise<MessagePage>;
+  public async getRoomMessages(
+    roomId: string,
+    opts?: number | GetRoomMessagesOptions
+  ): Promise<Message[] | MessagePage> {
+    const paged = typeof opts === 'object' && opts !== null;
+    const limit = Math.max(1, (paged ? opts.limit : opts) ?? 50);
+    const before = paged ? opts.before : undefined;
+    const after = paged ? opts.after : undefined;
+
+    const turnIndexExpr = sql<number>`COALESCE(turn_index, -1)`;
+
+    let query = this.db.db.selectFrom('messages').selectAll().where('room_id', '=', roomId);
+
+    if (before) {
+      const c = decodeMessageCursor(before);
+      query = query.where((eb) =>
+        eb.or([
+          eb('created_at', '<', c.createdAt),
+          eb.and([eb('created_at', '=', c.createdAt), eb(turnIndexExpr, '<', c.turnIndex)]),
+          eb.and([
+            eb('created_at', '=', c.createdAt),
+            eb(turnIndexExpr, '=', c.turnIndex),
+            eb('id', '<', c.id),
+          ]),
+        ])
+      );
+    }
+    if (after) {
+      const c = decodeMessageCursor(after);
+      query = query.where((eb) =>
+        eb.or([
+          eb('created_at', '>', c.createdAt),
+          eb.and([eb('created_at', '=', c.createdAt), eb(turnIndexExpr, '>', c.turnIndex)]),
+          eb.and([
+            eb('created_at', '=', c.createdAt),
+            eb(turnIndexExpr, '=', c.turnIndex),
+            eb('id', '>', c.id),
+          ]),
+        ])
+      );
+    }
+
+    // `after` pages forward in ascending order; every other form returns the
+    // newest window, fetched descending and reversed back to ascending.
+    const ascending = Boolean(after);
+    const direction = ascending ? 'asc' : 'desc';
+    const rows = await query
+      .orderBy('created_at', direction)
+      .orderBy(turnIndexExpr, direction)
+      .orderBy('id', direction)
+      .limit(limit + 1)
       .execute();
 
-    return rows.map((r) => ({
+    const hasMore = rows.length > limit;
+    const page = rows.slice(0, limit);
+    if (!ascending) page.reverse();
+
+    const items = page.map((r) => this.mapMessageRow(r));
+    if (!paged) return items;
+
+    // Continuation edge: oldest row when paging back, newest when paging forward.
+    const edge = ascending ? page[page.length - 1] : page[0];
+    return {
+      items,
+      hasMore,
+      nextCursor:
+        hasMore && edge
+          ? encodeMessageCursor({ createdAt: edge.created_at, turnIndex: edge.turn_index ?? -1, id: edge.id })
+          : undefined,
+    };
+  }
+
+  private mapMessageRow(r: MessageRow): Message {
+    return {
       id: r.id,
       roomId: r.room_id,
       threadId: r.thread_id || undefined,
@@ -860,11 +1346,11 @@ export class AgentDeckManager {
       senderDisplayName: r.sender_display_name,
       content: r.content,
       contentType: r.content_type as 'text',
-      turnIndex: r.turn_index || undefined,
+      turnIndex: r.turn_index ?? undefined,
       deliveryTrace: r.delivery_trace_json ? JSON.parse(r.delivery_trace_json) : undefined,
       rawPayload: r.raw_payload_json ? JSON.parse(r.raw_payload_json) : undefined,
-      createdAt: r.created_at,
-    }));
+      createdAt: isoTimestamp(r.created_at),
+    };
   }
 
   public async postMessage(params: {
@@ -875,10 +1361,11 @@ export class AgentDeckManager {
     content: string;
     contentType?: 'text' | 'markdown' | 'tool_call' | 'tool_result' | 'system';
     deliveryTrace?: ChatDeliveryTrace;
+    turnIndex?: number;
     rawPayload?: Record<string, unknown>;
   }): Promise<Message> {
     const id = `msg-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`;
-    const now = new Date().toISOString();
+    const createdAt = nextMessageDate();
 
     await this.db.db
       .insertInto('messages')
@@ -890,8 +1377,12 @@ export class AgentDeckManager {
         sender_display_name: params.senderDisplayName,
         content: params.content,
         content_type: params.contentType || 'text',
+        turn_index: params.turnIndex ?? null,
         delivery_trace_json: params.deliveryTrace ? JSON.stringify(params.deliveryTrace) : null,
         raw_payload_json: params.rawPayload ? JSON.stringify(params.rawPayload) : null,
+        // Explicit millisecond-precision write; the column default only has
+        // second granularity, which made same-second ordering arbitrary.
+        created_at: sqliteTimestamp(createdAt),
       })
       .execute();
 
@@ -903,188 +1394,13 @@ export class AgentDeckManager {
       senderDisplayName: params.senderDisplayName,
       content: params.content,
       contentType: params.contentType || 'text',
+      turnIndex: params.turnIndex,
       deliveryTrace: params.deliveryTrace,
       rawPayload: params.rawPayload,
-      createdAt: now,
+      createdAt: createdAt.toISOString(),
     };
 
     this.eventBus.emit('message:created', { message: msg });
     return msg;
-  }
-
-  // ── Persistence: Orchestration Runs ──────────────────────────────────────
-
-  public async createOrchestrationRun(params: {
-    roomId: string;
-    triggerMessageId?: string;
-  }): Promise<string> {
-    const id = `run-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`;
-    await this.db.db
-      .insertInto('orchestration_runs')
-      .values({
-        id,
-        room_id: params.roomId,
-        trigger_message_id: params.triggerMessageId || null,
-        status: 'running',
-        turns_executed: 0,
-        tokens_used_json: '{}',
-        cost_usd_json: '{}',
-        started_at: new Date().toISOString(),
-      })
-      .execute();
-    return id;
-  }
-
-  public async finalizeOrchestrationRun(params: {
-    runId: string;
-    status: 'completed' | 'cancelled' | 'failed';
-    turnsExecuted: number;
-    tokensUsed: number;
-    costUSD: number;
-  }): Promise<void> {
-    await this.db.db
-      .updateTable('orchestration_runs')
-      .set({
-        status: params.status,
-        turns_executed: params.turnsExecuted,
-        tokens_used_json: JSON.stringify({ total: params.tokensUsed }),
-        cost_usd_json: JSON.stringify({ total: params.costUSD }),
-        finished_at: new Date().toISOString(),
-      })
-      .where('id', '=', params.runId)
-      .execute();
-  }
-
-  public async listRuns(roomId?: string): Promise<Array<{
-    id: string;
-    roomId: string;
-    status: string;
-    turnsExecuted: number;
-    tokensUsed: number;
-    costUSD: number;
-    startedAt: string;
-    finishedAt: string | null;
-  }>> {
-    let query = this.db.db.selectFrom('orchestration_runs').selectAll();
-    if (roomId) {
-      query = query.where('room_id', '=', roomId);
-    }
-    const rows = await query.orderBy('started_at', 'desc').execute();
-    return rows.map((r) => ({
-      id: r.id,
-      roomId: r.room_id,
-      status: r.status,
-      turnsExecuted: r.turns_executed,
-      tokensUsed: JSON.parse(r.tokens_used_json).total ?? 0,
-      costUSD: JSON.parse(r.cost_usd_json).total ?? 0,
-      startedAt: r.started_at,
-      finishedAt: r.finished_at,
-    }));
-  }
-
-  // ── Persistence: Audit Logs ──────────────────────────────────────────────
-
-  public async writeAuditLog(params: {
-    eventType: string;
-    actorType: string;
-    actorId: string;
-    action: string;
-    resource: string;
-    status: string;
-    details?: Record<string, unknown>;
-  }): Promise<void> {
-    try {
-      const id = `audit-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`;
-      await this.db.db
-        .insertInto('audit_logs')
-        .values({
-          id,
-          event_type: params.eventType,
-          actor_type: params.actorType,
-          actor_id: params.actorId,
-          action: params.action,
-          resource: params.resource,
-          status: params.status,
-          details_json: JSON.stringify(params.details || {}),
-        })
-        .execute();
-    } catch {
-      // Audit log writes must never fail the caller
-    }
-  }
-
-  public async listAuditLogs(): Promise<Array<{
-    id: string;
-    eventType: string;
-    actorType: string;
-    actorId: string;
-    action: string;
-    resource: string;
-    status: string;
-    details: Record<string, unknown>;
-    createdAt: string;
-  }>> {
-    const rows = await this.db.db
-      .selectFrom('audit_logs')
-      .selectAll()
-      .orderBy('created_at', 'desc')
-      .limit(500)
-      .execute();
-    return rows.map((r) => ({
-      id: r.id,
-      eventType: r.event_type,
-      actorType: r.actor_type,
-      actorId: r.actor_id,
-      action: r.action,
-      resource: r.resource,
-      status: r.status,
-      details: JSON.parse(r.details_json),
-      createdAt: r.created_at,
-    }));
-  }
-
-  // ── Persistence: Backups ─────────────────────────────────────────────────
-
-  public async recordBackup(params: {
-    agentDefinitionId: string;
-    backupPath: string;
-    versionBefore: string;
-    metadata: Record<string, unknown>;
-  }): Promise<string> {
-    const id = `backup-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`;
-    await this.db.db
-      .insertInto('backups')
-      .values({
-        id,
-        agent_definition_id: params.agentDefinitionId,
-        backup_path: params.backupPath,
-        version_before: params.versionBefore,
-        metadata_json: JSON.stringify(params.metadata),
-      })
-      .execute();
-    return id;
-  }
-
-  public async listBackups(): Promise<Array<{
-    id: string;
-    agentDefinitionId: string;
-    backupPath: string;
-    versionBefore: string;
-    metadata: Record<string, unknown>;
-    createdAt: string;
-  }>> {
-    const rows = await this.db.db
-      .selectFrom('backups')
-      .selectAll()
-      .orderBy('created_at', 'desc')
-      .execute();
-    return rows.map((r) => ({
-      id: r.id,
-      agentDefinitionId: r.agent_definition_id,
-      backupPath: r.backup_path,
-      versionBefore: r.version_before,
-      metadata: JSON.parse(r.metadata_json),
-      createdAt: r.created_at,
-    }));
   }
 }

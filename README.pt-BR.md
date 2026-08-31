@@ -33,8 +33,8 @@ O **AgentDeck** é uma plataforma de gerenciamento e orquestração de agentes d
 - 🔗 **Interoperabilidade entre Agentes via MCP**: `agentdeck agents link` registra o deck como servidor MCP dentro de cada agente, para que os agentes possam se descobrir, perguntar e postar uns aos outros através das salas — com rate limiting, limite de profundidade e detecção de ciclos.
 - 🖥️ **Interface Dupla**:
   - **TUI Completa (Ink)**: Interface rica e responsiva direto no terminal com suporte a teclado.
-  - **Web Deck (React + Vite + Tailwind CSS)**: Interface web moderna com feed de eventos ao vivo, operações CRUD completas, a página **Agent Control** (status de instalação, roteamento de LLM, chaves de API, aplicar / dry-run) e a página **Groups** (salas como grupos de agentes).
-- 🔌 **Ecossistema de Plugins Extensível**: Suporte a plugins declarativos simples (`manifest.json`) e adaptadores completos (`@agentdeck/adapter-sdk`).
+  - **Web Deck (React + Vite + Tailwind CSS)**: Interface web moderna com streaming de tokens ao vivo e feed de eventos por sala, operações CRUD completas, a página **Agent Control** (status de instalação, roteamento de LLM, chaves de API, aplicar / dry-run) e a página **Groups** (salas como grupos de agentes).
+- 🔌 **Ecossistema de Plugins Extensível**: Plugins declarativos (`manifest.json`/`manifest.yaml`) e adaptadores programáticos Tier-2 carregados via factory `createAdapter(sdk)`, instaláveis com `agentdeck plugin install` (fontes `github:` apenas com ref fixado).
 - 🔒 **Segurança em Profundidade**: Vinculado por padrão a `127.0.0.1`, autenticação via token Bearer para rede local, redação recursiva de segredos/chaves de API, isolamento de permissões POSIX `0700` e chaves de API dos provedores guardadas em um cofre por provedor (`~/.agentdeck/secrets/`, modo `0600`) — nunca no SQLite.
 
 ---

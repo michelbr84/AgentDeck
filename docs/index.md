@@ -53,4 +53,6 @@ Welcome to the **AgentDeck** documentation. AgentDeck is a unified agent managem
 | `agentdeck agents link` | Register AgentDeck's MCP server in each agent so they can call each other |
 | `agentdeck mcp-server` | Expose this deck as an MCP server over stdio (agent-to-agent calls) |
 | `agentdeck chat <room>` | Start an interactive CLI chat session in a room |
+| `agentdeck rooms list\|delete` | List rooms with limits, or delete one (messages cascade) |
+| `agentdeck plugin install <src>` | Install a plugin from a local path or pinned `github:owner/repo#ref` |
 | `agentdeck docs` | View built-in offline documentation directly in the terminal |

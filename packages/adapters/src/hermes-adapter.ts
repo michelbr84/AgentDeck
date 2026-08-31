@@ -603,7 +603,7 @@ export class HermesAdapter implements AgentAdapter, LlmConfigurable {
         args,
         cwd: context.workspaceDir || process.cwd(),
         abortSignal: context.abortSignal,
-        timeoutMs: 300000,
+        timeoutMs: context.turnRequest?.timeoutMs ?? 300000,
       },
       {
         onStdoutChunk: (chunk) => {

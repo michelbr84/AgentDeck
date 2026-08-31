@@ -33,8 +33,8 @@
 - 🔗 **Agent-to-Agent Interop over MCP**: `agentdeck agents link` registers the deck as an MCP server inside each agent, so agents can discover, ask, and post to each other through rooms — guarded by rate limiting, depth caps, and cycle detection.
 - 🖥️ **Dual Interface**:
   - **Full-featured TUI (Ink)**: Responsive, keyboard-driven terminal user interface.
-  - **Web Deck (React + Vite + Tailwind CSS)**: Modern browser deck with live event feed, full CRUD operations, an **Agent Control** page (install status, LLM routing, API keys, apply / dry-run) and a **Groups** page (rooms as agent groups).
-- 🔌 **Extensible Plugin Ecosystem**: Declarative simple plugins (`manifest.json`) and programmatic full adapters (`@agentdeck/adapter-sdk`).
+  - **Web Deck (React + Vite + Tailwind CSS)**: Modern browser deck with live token streaming and per-room event feed, full CRUD operations, an **Agent Control** page (install status, LLM routing, API keys, apply / dry-run) and a **Groups** page (rooms as agent groups).
+- 🔌 **Extensible Plugin Ecosystem**: Declarative plugins (`manifest.json`/`manifest.yaml`) and programmatic Tier-2 adapters loaded via a `createAdapter(sdk)` factory, installable with `agentdeck plugin install` (pinned `github:` sources only).
 - 🔒 **Security in Depth**: Localhost-by-default (`127.0.0.1`), LAN bearer token authentication, recursive secret redaction, `0700` filesystem isolation, and provider API keys kept in a per-provider secret store (`~/.agentdeck/secrets/`, mode `0600`) — never in SQLite.
 
 ---

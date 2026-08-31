@@ -1,6 +1,6 @@
-import { AgentDeckManager } from './agent-deck-manager.js';
+import { AgentDeckManager, GetRoomMessagesOptions } from './agent-deck-manager.js';
 import { MultiAgentOrchestrationEngine, OrchestrationResult } from './orchestration-engine.js';
-import { Message, RoomMode } from '@agentdeck/protocol';
+import { Message, MessagePage, RoomMode } from '@agentdeck/protocol';
 
 export interface ChatSendOptions {
   roomId: string;
@@ -26,10 +26,19 @@ export class ChatService {
   }
 
   /**
-   * Retrieves messages for a room with ordering.
+   * Retrieves messages for a room in ascending display order. The
+   * positional-number form returns the newest window as a plain array; the
+   * options form pages by cursor and returns a `MessagePage`.
    */
-  public async getMessages(roomId: string, limit = 100): Promise<Message[]> {
-    return this.manager.getRoomMessages(roomId, limit);
+  public async getMessages(roomId: string, limit?: number): Promise<Message[]>;
+  public async getMessages(roomId: string, opts: GetRoomMessagesOptions): Promise<MessagePage>;
+  public async getMessages(
+    roomId: string,
+    opts: number | GetRoomMessagesOptions = 100
+  ): Promise<Message[] | MessagePage> {
+    return typeof opts === 'number'
+      ? this.manager.getRoomMessages(roomId, opts)
+      : this.manager.getRoomMessages(roomId, opts);
   }
 
   /**
@@ -38,6 +47,10 @@ export class ChatService {
   public async send(options: ChatSendOptions): Promise<OrchestrationResult> {
     const senderUserId = options.senderUserId || 'user-default';
     const senderDisplayName = options.senderDisplayName || 'User';
+
+    // A real profile sending into a room becomes a recorded participant;
+    // synthetic legacy ids ('user-default', 'cli-user', ...) are ignored.
+    await this.manager.ensureRoomUserMember(options.roomId, senderUserId);
 
     return this.engine.executeRun({
       roomId: options.roomId,

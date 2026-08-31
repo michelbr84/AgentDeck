@@ -1,10 +1,14 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
+import { pathToFileURL } from 'node:url';
 import { z } from 'zod';
+import { parse as parseYaml } from 'yaml';
 import { AgentAdapter, ExecutionContext, ExecutionResult } from '@agentdeck/adapter-sdk';
 import { AgentCapabilities, AgentDefinition, HealthReport, HealthCheckLevel } from '@agentdeck/protocol';
 import { executeSafeCommand } from '@agentdeck/adapter-sdk';
+import { compareSemver } from '@agentdeck/adapters';
+import { AGENTDECK_VERSION } from '@agentdeck/shared';
 
 export const SimplePluginManifestSchema = z.object({
   apiVersion: z.literal('agentdeck.io/v1alpha1'),
@@ -32,10 +36,16 @@ export const SimplePluginManifestSchema = z.object({
     command: z.string(),
     args: z.array(z.string()).default(['upgrade']),
   }).optional(),
-  execution: z.object({
-    command: z.string(),
-    args: z.array(z.string()).default(['--prompt', '{{prompt}}']),
-  }),
+  execution: z
+    .object({
+      command: z
+        .string()
+        .refine((c) => !/[;&|`$><\n\r]/.test(c), 'execution.command must not contain shell metacharacters'),
+      args: z.array(z.string()).default(['--prompt', '{{prompt}}']),
+    })
+    .refine((e) => e.args.filter((a) => a === '{{prompt}}').length === 1, {
+      message: "execution.args must contain the '{{prompt}}' placeholder exactly once, as its own argument",
+    }),
   capabilities: z.record(z.boolean()).default({}),
 });
 
@@ -237,18 +247,35 @@ export class DeclarativePluginAdapter implements AgentAdapter {
       throw new Error(`${this.manifest.name} binary not found. Install it or deactivate this instance.`);
     }
 
+    // The prompt travels as opaque user content, exactly like the built-in
+    // adapters — rendering it into a plain string arg made every multi-line
+    // prompt fail isSafeCliArgument's newline check.
     const renderedArgs = this.manifest.execution.args.map((a: string) =>
-      a.replace('{{prompt}}', promptText)
+      a === '{{prompt}}' ? ({ value: promptText, type: 'opaque-user-content' as const }) : a
     );
 
-    const out = await executeSafeCommand({
-      command: this.manifest.execution.command || det.binaryPath,
-      args: renderedArgs,
-      cwd: context.workspaceDir || process.cwd(),
-      abortSignal: context.abortSignal,
-    });
+    let fullStdout = '';
+    let fullStderr = '';
+    const out = await executeSafeCommand(
+      {
+        command: this.manifest.execution.command || det.binaryPath,
+        args: renderedArgs,
+        cwd: context.workspaceDir || process.cwd(),
+        abortSignal: context.abortSignal,
+        timeoutMs: context.turnRequest?.timeoutMs ?? 300000,
+      },
+      {
+        onStdoutChunk: (chunk) => {
+          fullStdout += chunk;
+          context.onChunk?.(chunk);
+        },
+        onStderrChunk: (chunk) => {
+          fullStderr += chunk;
+        },
+      }
+    );
 
-    const content = out.stdout.trim() || out.stderr.trim();
+    const content = (out.stdout || fullStdout).trim() || (out.stderr || fullStderr).trim();
     return {
       content,
       tokensUsed: {
@@ -261,11 +288,143 @@ export class DeclarativePluginAdapter implements AgentAdapter {
   }
 }
 
+/**
+ * Tier-2 programmatic plugins: a manifest pointing at a prebuilt ESM entry
+ * module whose default (or named) `createAdapter(sdk)` factory returns an
+ * AgentAdapter. The SDK surface is INJECTED as an argument — plugins living
+ * in ~/.agentdeck/plugins cannot resolve @agentdeck/* packages under the
+ * standalone install layout, so importing the SDK from the plugin is a trap
+ * the factory contract sidesteps entirely.
+ */
+export const ProgrammaticPluginManifestSchema = z.object({
+  apiVersion: z.literal('agentdeck.io/v1alpha1'),
+  kind: z.literal('AgentPluginModule'),
+  id: z.string().min(1),
+  name: z.string().min(1),
+  version: z.string().default('1.0.0'),
+  description: z.string().default(''),
+  /** Path of the prebuilt ESM entry, relative to the plugin directory. */
+  entry: z.string().min(1),
+  engines: z
+    .object({
+      /** Minimum AgentDeck version the plugin needs (plain semver). */
+      agentdeck: z.string().optional(),
+    })
+    .optional(),
+});
+export type ProgrammaticPluginManifest = z.infer<typeof ProgrammaticPluginManifestSchema>;
+
+/** The capability surface handed to a Tier-2 plugin factory. */
+export interface PluginSdk {
+  agentdeckVersion: string;
+  executeSafeCommand: typeof executeSafeCommand;
+}
+
+export type AnyPluginManifest =
+  | { kind: 'AgentPlugin'; manifest: SimplePluginManifest }
+  | { kind: 'AgentPluginModule'; manifest: ProgrammaticPluginManifest };
+
+const MANIFEST_FILENAMES = ['manifest.json', 'manifest.yaml', 'manifest.yml'];
+
+/**
+ * Reads and validates a plugin directory's manifest (JSON or YAML).
+ * Throws with a readable message when nothing valid is found.
+ */
+export async function readPluginManifest(pluginDir: string): Promise<AnyPluginManifest> {
+  let lastError: Error | null = null;
+  for (const filename of MANIFEST_FILENAMES) {
+    const manifestPath = path.join(pluginDir, filename);
+    let raw: string;
+    try {
+      raw = await fs.readFile(manifestPath, 'utf8');
+    } catch {
+      continue;
+    }
+    try {
+      const data = filename.endsWith('.json') ? JSON.parse(raw) : parseYaml(raw);
+      const kind = (data as { kind?: string } | null)?.kind;
+      if (kind === 'AgentPluginModule') {
+        return { kind: 'AgentPluginModule', manifest: ProgrammaticPluginManifestSchema.parse(data) };
+      }
+      return { kind: 'AgentPlugin', manifest: SimplePluginManifestSchema.parse(data) };
+    } catch (err) {
+      lastError = err as Error;
+    }
+  }
+  throw new Error(
+    `No valid plugin manifest (manifest.json|yaml|yml) in ${pluginDir}${lastError ? `: ${lastError.message}` : ''}`
+  );
+}
+
+function assertEngineCompatible(manifest: ProgrammaticPluginManifest): void {
+  const required = manifest.engines?.agentdeck;
+  if (!required) return;
+  if (compareSemver(AGENTDECK_VERSION, required) < 0) {
+    throw new Error(
+      `Plugin "${manifest.id}" requires AgentDeck >= ${required} (running ${AGENTDECK_VERSION})`
+    );
+  }
+}
+
+/** Duck-type check of the factory's product against the AgentAdapter contract. */
+function isAdapterShaped(value: unknown): value is AgentAdapter {
+  const candidate = value as Partial<AgentAdapter> | null;
+  return Boolean(
+    candidate &&
+      typeof candidate === 'object' &&
+      candidate.definition &&
+      typeof candidate.definition.id === 'string' &&
+      typeof candidate.execute === 'function' &&
+      typeof candidate.detect === 'function'
+  );
+}
+
+export async function loadProgrammaticPlugin(
+  pluginDir: string,
+  manifest: ProgrammaticPluginManifest
+): Promise<AgentAdapter> {
+  assertEngineCompatible(manifest);
+
+  const entryPath = path.resolve(pluginDir, manifest.entry);
+  // The entry must stay inside the plugin directory — a manifest pointing at
+  // ../../ elsewhere on disk is malformed at best.
+  if (!entryPath.startsWith(path.resolve(pluginDir) + path.sep)) {
+    throw new Error(`Plugin "${manifest.id}" entry escapes its directory: ${manifest.entry}`);
+  }
+  await fs.access(entryPath);
+
+  const mod = (await import(pathToFileURL(entryPath).href)) as Record<string, unknown>;
+  const factory = (mod['createAdapter'] ?? mod['default']) as
+    | ((sdk: PluginSdk) => AgentAdapter | Promise<AgentAdapter>)
+    | undefined;
+  if (typeof factory !== 'function') {
+    throw new Error(
+      `Plugin "${manifest.id}" entry must export a createAdapter(sdk) factory (named or default)`
+    );
+  }
+
+  const sdk: PluginSdk = {
+    agentdeckVersion: AGENTDECK_VERSION,
+    executeSafeCommand,
+  };
+  const adapter = await factory(sdk);
+  if (!isAdapterShaped(adapter)) {
+    throw new Error(
+      `Plugin "${manifest.id}" factory did not return an AgentAdapter (definition.id, detect() and execute() are required)`
+    );
+  }
+  return adapter;
+}
+
 export class PluginLoader {
   private pluginsDir: string;
 
   constructor(pluginsDir?: string) {
     this.pluginsDir = pluginsDir || path.join(os.homedir(), '.agentdeck', 'plugins');
+  }
+
+  public get directory(): string {
+    return this.pluginsDir;
   }
 
   public async loadAllPlugins(): Promise<AgentAdapter[]> {
@@ -275,16 +434,19 @@ export class PluginLoader {
       const entries = await fs.readdir(this.pluginsDir, { withFileTypes: true });
 
       for (const entry of entries) {
-        if (entry.isDirectory()) {
-          const manifestPath = path.join(this.pluginsDir, entry.name, 'manifest.json');
-          try {
-            const raw = await fs.readFile(manifestPath, 'utf8');
-            const json = JSON.parse(raw);
-            const parsed = SimplePluginManifestSchema.parse(json);
-            adapters.push(new DeclarativePluginAdapter(parsed));
-          } catch {
-            // not a declarative JSON manifest or invalid
+        if (!entry.isDirectory()) continue;
+        const pluginDir = path.join(this.pluginsDir, entry.name);
+        // Per-plugin try/catch: one broken plugin must never break
+        // AgentDeckManager.create().
+        try {
+          const found = await readPluginManifest(pluginDir);
+          if (found.kind === 'AgentPluginModule') {
+            adapters.push(await loadProgrammaticPlugin(pluginDir, found.manifest));
+          } else {
+            adapters.push(new DeclarativePluginAdapter(found.manifest));
           }
+        } catch {
+          // invalid or missing manifest / broken entry module — skip
         }
       }
     } catch {

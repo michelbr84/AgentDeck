@@ -3,10 +3,13 @@ import { Kysely, SqliteDialect, sql } from 'kysely';
 import path from 'node:path';
 import { ensureSecureDirectory } from '@agentdeck/security';
 import { DatabaseSchema } from './schema.js';
-import { initialMigration, v104Migration, llmRoutingMigration, Migration } from './migrations.js';
+import { initialMigration, v104Migration, llmRoutingMigration, roomTurnTimeoutMigration, Migration } from './migrations.js';
 
 export * from './schema.js';
 export * from './migrations.js';
+// Re-exported so consumers can build raw SQL fragments (e.g. COALESCE ordering)
+// without taking their own kysely dependency.
+export { sql } from 'kysely';
 
 export interface DatabaseOptions {
   dbPath: string;
@@ -57,7 +60,7 @@ export class AgentDeckDatabase {
 
     const appliedVersions = new Set(appliedRows.map((r) => (r as unknown as { version: number }).version));
 
-    const migrations: Migration[] = [initialMigration, v104Migration, llmRoutingMigration];
+    const migrations: Migration[] = [initialMigration, v104Migration, llmRoutingMigration, roomTurnTimeoutMigration];
 
     for (const migration of migrations) {
       if (!appliedVersions.has(migration.version)) {

@@ -269,3 +269,25 @@ export const llmRoutingMigration: Migration = {
     // the added surface is additive, so leaving it in place stays compatible.
   },
 };
+
+/**
+ * v4 adds the per-turn timeout knob to rooms, separate from the run-level
+ * runtime_limit_sec cap. Additive alter-table in the forward-only style of 002.
+ */
+export const roomTurnTimeoutMigration: Migration = {
+  version: 4,
+  name: '004_room_turn_timeout',
+  up: async (db) => {
+    try {
+      await db.schema
+        .alterTable('rooms')
+        .addColumn('turn_timeout_sec', 'integer')
+        .execute();
+    } catch {
+      // Column might already exist.
+    }
+  },
+  down: async () => {
+    // Forward-only: additive column, dropping needs a table rebuild in SQLite.
+  },
+};

@@ -335,15 +335,29 @@ export class ClineAdapter implements AgentAdapter {
       throw new Error('Cline binary (cline) not found. Install it or deactivate this instance.');
     }
 
-    const output = await executeSafeCommand({
-      command: binPath,
-      args: ['-y', '--prompt', { value: promptText, type: 'opaque-user-content' }],
-      cwd: context.workspaceDir || process.cwd(),
-      abortSignal: context.abortSignal,
-    });
+    let fullStdout = '';
+    let fullStderr = '';
+    const output = await executeSafeCommand(
+      {
+        command: binPath,
+        args: ['-y', '--prompt', { value: promptText, type: 'opaque-user-content' }],
+        cwd: context.workspaceDir || process.cwd(),
+        abortSignal: context.abortSignal,
+        timeoutMs: context.turnRequest?.timeoutMs ?? 300000,
+      },
+      {
+        onStdoutChunk: (chunk) => {
+          fullStdout += chunk;
+          context.onChunk?.(chunk);
+        },
+        onStderrChunk: (chunk) => {
+          fullStderr += chunk;
+        },
+      }
+    );
 
-    const stdoutClean = output.stdout.trim();
-    const stderrClean = output.stderr.trim();
+    const stdoutClean = (output.stdout || fullStdout).trim();
+    const stderrClean = (output.stderr || fullStderr).trim();
 
     if (output.exitCode !== 0) {
       throw new Error(`Cline process failed with exit code ${output.exitCode}: ${stderrClean || stdoutClean || 'Process failed'}`);

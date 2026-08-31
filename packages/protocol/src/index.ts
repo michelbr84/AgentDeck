@@ -169,6 +169,11 @@ export type UserProfile = z.infer<typeof UserProfileSchema>;
 export const RoomModeSchema = z.enum(['mention', 'panel', 'debate', 'round_robin', 'coordinator']);
 export type RoomMode = z.infer<typeof RoomModeSchema>;
 
+/** Structured role of one turn inside a debate run (persisted in the
+ * message's rawPayload as { debateRole }). */
+export const DebateRoleSchema = z.enum(['proposer', 'critique', 'synthesis']);
+export type DebateRole = z.infer<typeof DebateRoleSchema>;
+
 export const RoomSchema = z.object({
   id: IdSchema,
   name: z.string().min(1),
@@ -178,6 +183,8 @@ export const RoomSchema = z.object({
   maxTurnsPerRun: z.number().int().positive().default(10),
   maxRuntimeSec: z.number().int().positive().default(600),
   maxCostUSD: z.number().positive().optional(),
+  /** Wall-clock cap for a single agent turn; unset falls back to the deck default. */
+  turnTimeoutSec: z.number().int().positive().optional(),
   workspacePath: z.string().optional(),
   createdAt: z.string().datetime(),
   updatedAt: z.string().datetime(),
@@ -205,6 +212,7 @@ export const ChatDeliveryStateSchema = z.enum([
   'routing',
   'running',
   'completed',
+  'cancelled',
   'failed',
   'no_target',
 ]);
@@ -223,6 +231,7 @@ export const ChatDeliveryReasonCodeSchema = z.enum([
   'target_agent_inactive',
   'target_agent_not_member',
   'execution_error',
+  'run_aborted',
 ]);
 export type ChatDeliveryReasonCode = z.infer<typeof ChatDeliveryReasonCodeSchema>;
 
@@ -259,6 +268,19 @@ export const MessageSchema = z.object({
   createdAt: z.string().datetime(),
 });
 export type Message = z.infer<typeof MessageSchema>;
+
+/**
+ * One page of a room's message history. `items` are always in ascending
+ * display order; `nextCursor` continues in the direction of the query
+ * (older for `before`/default, newer for `after`) and is only present
+ * when `hasMore` is true.
+ */
+export const MessagePageSchema = z.object({
+  items: z.array(MessageSchema),
+  nextCursor: z.string().optional(),
+  hasMore: z.boolean(),
+});
+export type MessagePage = z.infer<typeof MessagePageSchema>;
 
 // ==========================================
 // 9. USAGE & METRICS (ESTIMATED / REPORTED)
@@ -323,6 +345,34 @@ export const EventEnvelopeSchema = z.object({
 export type EventEnvelope<T = unknown> = Omit<z.infer<typeof EventEnvelopeSchema>, 'payload'> & {
   payload: T;
 };
+
+/**
+ * Payload for `run:chunk` events — one coalesced slice of an agent's live
+ * output. `seq` is monotonic per turn so consumers can re-order or detect
+ * gaps; text is already redacted by the server before hitting the wire.
+ */
+export const RunChunkPayloadSchema = z.object({
+  runId: IdSchema,
+  roomId: IdSchema,
+  instanceId: IdSchema,
+  instanceName: z.string(),
+  turnIndex: z.number().int().nonnegative(),
+  seq: z.number().int().nonnegative(),
+  text: z.string(),
+});
+export type RunChunkPayload = z.infer<typeof RunChunkPayloadSchema>;
+
+/** Payload for `run:turn:started` / `run:turn:completed` / `run:turn:failed`. */
+export const RunTurnPayloadSchema = z.object({
+  runId: IdSchema,
+  roomId: IdSchema,
+  instanceId: IdSchema,
+  instanceName: z.string(),
+  turnIndex: z.number().int().nonnegative(),
+  messageId: IdSchema.optional(),
+  error: z.string().optional(),
+});
+export type RunTurnPayload = z.infer<typeof RunTurnPayloadSchema>;
 
 // ==========================================
 // 12. NORMALIZED TRANSPORT & TURN EXECUTION

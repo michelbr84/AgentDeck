@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
+import { useEventStream, StreamEnvelope } from './hooks/useEventStream';
 import {
   Bot,
   MessageSquare,
@@ -118,6 +119,8 @@ interface ChatDeliveryTrace {
 
 interface Message {
   id: string;
+  roomId?: string;
+  senderId?: string;
   senderDisplayName: string;
   senderType: string;
   content: string;
@@ -135,6 +138,21 @@ export default function App() {
   const [currentRoom, setCurrentRoom] = useState<Room | null>(null);
   const [roomMembers, setRoomMembers] = useState<RoomMember[]>([]);
   const [messages, setMessages] = useState<Message[]>([]);
+  const [users, setUsers] = useState<Array<{ id: string; displayName: string; avatar?: string }>>([]);
+  const [currentUserId, setCurrentUserId] = useState<string | null>(() => {
+    try {
+      return window.localStorage.getItem('agentdeck-user-id');
+    } catch {
+      return null;
+    }
+  });
+  const [isSending, setIsSending] = useState(false);
+  const [activeRunId, setActiveRunId] = useState<string | null>(null);
+  const [streamingTurns, setStreamingTurns] = useState<Record<string, { instanceName: string; text: string }>>({});
+  const [olderCursor, setOlderCursor] = useState<string | null>(null);
+  const [hasOlder, setHasOlder] = useState(false);
+  const [loadingOlder, setLoadingOlder] = useState(false);
+  const messagesScrollRef = useRef<HTMLDivElement | null>(null);
   const [chatInput, setChatInput] = useState('');
   const [inspectedPrompt, setInspectedPrompt] = useState<InspectedPromptData | null>(null);
   const [statusNotification, setStatusNotification] = useState<{ type: 'success' | 'error' | 'info'; message: string } | null>(null);
@@ -225,16 +243,39 @@ export default function App() {
 
   const fetchInitialData = async () => {
     try {
-      const [agentsRes, instancesRes, personasRes, roomsRes] = await Promise.all([
+      const [agentsRes, instancesRes, personasRes, roomsRes, usersRes] = await Promise.all([
         apiFetch('/api/v1/agents').catch(() => []),
         apiFetch('/api/v1/instances').catch(() => []),
         apiFetch('/api/v1/personas').catch(() => []),
         apiFetch('/api/v1/rooms').catch(() => []),
+        apiFetch('/api/v1/users').catch(() => []),
       ]);
 
       setInstallations(Array.isArray(agentsRes) ? agentsRes : []);
       setInstances(Array.isArray(instancesRes) ? instancesRes : []);
       setPersonas(Array.isArray(personasRes) ? personasRes : []);
+
+      // Identity: replace the old hardcoded sender with selectable local
+      // profiles; seed one on first use.
+      let userList = Array.isArray(usersRes) ? usersRes : [];
+      if (userList.length === 0) {
+        const created = await apiFetch<{ id: string; displayName: string; avatar?: string }>('/api/v1/users', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ displayName: 'Local User', avatar: '👤' }),
+        }).catch(() => null);
+        if (created?.id) userList = [created];
+      }
+      setUsers(userList);
+      setCurrentUserId((prev) => {
+        const valid = prev && userList.some((u: { id: string }) => u.id === prev) ? prev : userList[0]?.id ?? null;
+        try {
+          if (valid) window.localStorage.setItem('agentdeck-user-id', valid);
+        } catch {
+          // storage unavailable
+        }
+        return valid;
+      });
       const roomList = Array.isArray(roomsRes) ? roomsRes : [];
       setRooms(roomList);
       if (roomList.length > 0) {
@@ -250,13 +291,50 @@ export default function App() {
   const loadRoomData = async (roomId: string) => {
     try {
       const [msgsRes, membersRes] = await Promise.all([
-        apiFetch(`/api/v1/rooms/${roomId}/messages`).catch(() => []),
-        apiFetch(`/api/v1/rooms/${roomId}/members`).catch(() => []),
+        apiFetch<Message[] | { items: Message[]; nextCursor?: string; hasMore?: boolean }>(
+          `/api/v1/rooms/${roomId}/messages?limit=50`
+        ).catch(() => [] as Message[]),
+        apiFetch<RoomMember[]>(`/api/v1/rooms/${roomId}/members`).catch(() => [] as RoomMember[]),
       ]);
-      if (Array.isArray(msgsRes)) setMessages(msgsRes);
+      if (Array.isArray(msgsRes)) {
+        // Older server without pagination: plain array, nothing further to page.
+        setMessages(msgsRes);
+        setOlderCursor(null);
+        setHasOlder(false);
+      } else if (msgsRes && Array.isArray(msgsRes.items)) {
+        setMessages(msgsRes.items);
+        setOlderCursor(msgsRes.nextCursor ?? null);
+        setHasOlder(Boolean(msgsRes.hasMore));
+      }
       if (Array.isArray(membersRes)) setRoomMembers(membersRes);
     } catch (e) {
       console.error(e);
+    }
+  };
+
+  const handleLoadOlder = async () => {
+    if (!currentRoom || !olderCursor || loadingOlder) return;
+    setLoadingOlder(true);
+    const container = messagesScrollRef.current;
+    const previousHeight = container?.scrollHeight ?? 0;
+    try {
+      const page = await apiFetch<{ items: Message[]; nextCursor?: string; hasMore?: boolean }>(
+        `/api/v1/rooms/${currentRoom.id}/messages?limit=50&before=${encodeURIComponent(olderCursor)}`
+      );
+      if (page && Array.isArray(page.items)) {
+        setMessages((prev) => [...page.items, ...prev]);
+        setOlderCursor(page.nextCursor ?? null);
+        setHasOlder(Boolean(page.hasMore));
+        // Keep the viewport anchored on the message the user was reading.
+        requestAnimationFrame(() => {
+          if (container) container.scrollTop += container.scrollHeight - previousHeight;
+        });
+      }
+    } catch (err) {
+      console.error(err);
+      showToast('error', 'Failed to load older messages');
+    } finally {
+      setLoadingOlder(false);
     }
   };
 
@@ -265,30 +343,144 @@ export default function App() {
     loadRoomData(room.id);
   };
 
+  const currentUser = users.find((u) => u.id === currentUserId) ?? null;
+
+  const handleSelectUser = (id: string) => {
+    setCurrentUserId(id);
+    try {
+      window.localStorage.setItem('agentdeck-user-id', id);
+    } catch {
+      // storage unavailable
+    }
+  };
+
   const handleSendMessage = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!chatInput.trim() || !currentRoom) return;
+    if (!chatInput.trim() || !currentRoom || isSending) return;
     const prompt = chatInput.trim();
     setChatInput('');
+    setIsSending(true);
 
     try {
-      const data = await apiFetch<{ deliveryTrace?: { state: string; feedbackMessage?: string } }>(
-        `/api/v1/rooms/${currentRoom.id}/run`,
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ prompt, userId: 'user-michel', userName: 'Michel' }),
-        },
-      );
+      const data = await apiFetch<{
+        deliveryTrace?: { state: string; feedbackMessage?: string };
+        status?: string;
+      }>(`/api/v1/rooms/${currentRoom.id}/run`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          prompt,
+          userId: currentUser?.id ?? 'user-default',
+          userName: currentUser?.displayName ?? 'User',
+        }),
+      });
       if (data?.deliveryTrace && data.deliveryTrace.state === 'no_target') {
         showToast('info', data.deliveryTrace.feedbackMessage || '');
+      }
+      if (data?.status === 'cancelled') {
+        showToast('info', 'Run stopped.');
       }
       await loadRoomData(currentRoom.id);
     } catch (err) {
       console.error(err);
       showToast('error', (err as Error).message || 'Failed to dispatch message');
+    } finally {
+      setIsSending(false);
     }
   };
+
+  // Room-scoped abort needs no runId, so the stop button works even before a
+  // run:started event could tell us which run is live.
+  const handleStopRun = async () => {
+    if (!currentRoom) return;
+    try {
+      // Prefer the precise runId (learned from run:started over /ws); the
+      // room-scoped abort covers the window before that event arrives.
+      if (activeRunId) {
+        await apiFetch(`/api/v1/runs/${activeRunId}/abort`, { method: 'POST' });
+      } else {
+        await apiFetch(`/api/v1/rooms/${currentRoom.id}/abort`, { method: 'POST' });
+      }
+    } catch (err) {
+      console.error(err);
+      showToast('error', 'Failed to stop the run');
+    }
+  };
+
+  // Live deck events for the room being viewed: token streaming, run
+  // lifecycle, and messages posted by other clients.
+  useEventStream(currentRoom?.id ?? null, (envelope: StreamEnvelope) => {
+    const roomMatches = !envelope.roomId || envelope.roomId === currentRoom?.id;
+    if (!roomMatches) return;
+
+    switch (envelope.type) {
+      case 'run:started': {
+        const runId = (envelope.payload as { runId?: string } | undefined)?.runId ?? envelope.runId;
+        if (runId) setActiveRunId(runId);
+        break;
+      }
+      case 'run:chunk': {
+        const p = envelope.payload as
+          | { instanceId?: string; instanceName?: string; text?: string }
+          | undefined;
+        if (!p?.instanceId || !p.text) break;
+        setStreamingTurns((prev) => ({
+          ...prev,
+          [p.instanceId!]: {
+            instanceName: p.instanceName ?? 'agent',
+            text: (prev[p.instanceId!]?.text ?? '') + p.text,
+          },
+        }));
+        break;
+      }
+      case 'message:created': {
+        const msg = (envelope.payload as { message?: Message } | undefined)?.message;
+        if (!msg || msg.roomId !== currentRoom?.id) break;
+        setMessages((prev) => (prev.some((m) => m.id === msg.id) ? prev : [...prev, msg]));
+        // The persisted message replaces the sender's ephemeral bubble.
+        const senderId = msg.senderId;
+        if (senderId) {
+          setStreamingTurns((prev) => {
+            if (!(senderId in prev)) return prev;
+            const next = { ...prev };
+            delete next[senderId];
+            return next;
+          });
+        }
+        break;
+      }
+      case 'run:turn:completed':
+      case 'run:turn:failed': {
+        const p = envelope.payload as { instanceId?: string } | undefined;
+        if (!p?.instanceId) break;
+        setStreamingTurns((prev) => {
+          if (!(p.instanceId! in prev)) return prev;
+          const next = { ...prev };
+          delete next[p.instanceId!];
+          return next;
+        });
+        break;
+      }
+      case 'run:completed':
+      case 'run:cancelled':
+      case 'run:failed': {
+        setActiveRunId(null);
+        setStreamingTurns({});
+        break;
+      }
+      case 'room:deleted': {
+        const p = envelope.payload as { roomId?: string } | undefined;
+        if (p?.roomId && p.roomId === currentRoom?.id) {
+          setCurrentRoom(null);
+          setMessages([]);
+          fetchInitialData();
+        }
+        break;
+      }
+      default:
+        break;
+    }
+  });
 
   // Persona Management
   const openCreatePersona = () => {
@@ -444,6 +636,21 @@ export default function App() {
     try {
       await apiFetch(`/api/v1/instances/${id}`, { method: 'DELETE' });
       showToast('success', `Agent "${name}" deleted`);
+      fetchInitialData();
+    } catch (err) {
+      showToast('error', (err as Error).message);
+    }
+  };
+
+  const handleDeleteRoom = async () => {
+    if (!currentRoom) return;
+    if (!confirm(`Delete room "${currentRoom.name}"? Its messages and history are removed permanently.`)) return;
+    try {
+      await apiFetch(`/api/v1/rooms/${currentRoom.id}`, { method: 'DELETE' });
+      showToast('success', `Room "${currentRoom.name}" deleted`);
+      setShowRoomSettingsModal(false);
+      setCurrentRoom(null);
+      setMessages([]);
       fetchInitialData();
     } catch (err) {
       showToast('error', (err as Error).message);
@@ -1013,7 +1220,7 @@ export default function App() {
                           </p>
                         )}
                         {currentRoom.mode === 'panel' && <p>Broadcasts every message to all room members.</p>}
-                        {currentRoom.mode === 'debate' && <p>Sequential debate across all active room members.</p>}
+                        {currentRoom.mode === 'debate' && <p>Structured debate: the lead proposes, the other members critique, the lead synthesizes.</p>}
                       </div>
                     </div>
                   )}
@@ -1023,7 +1230,18 @@ export default function App() {
               {/* Chat Viewport */}
               <div className="flex-1 flex flex-col h-full bg-slate-900/30 border border-slate-800 rounded-xl overflow-hidden">
                 {/* Messages list */}
-                <div className="flex-1 overflow-y-auto space-y-3 p-4">
+                <div ref={messagesScrollRef} className="flex-1 overflow-y-auto space-y-3 p-4">
+                  {hasOlder && messages.length > 0 && (
+                    <div className="text-center">
+                      <button
+                        onClick={handleLoadOlder}
+                        disabled={loadingOlder}
+                        className="text-xs px-3 py-1.5 rounded-lg border border-slate-700 text-slate-300 hover:bg-slate-800 disabled:opacity-50"
+                      >
+                        {loadingOlder ? 'Loading…' : '↑ Load older messages'}
+                      </button>
+                    </div>
+                  )}
                   {messages.length === 0 ? (
                     <div className="text-center text-slate-500 py-16 space-y-2">
                       <p className="text-sm">No messages in room #{currentRoom?.name} yet.</p>
@@ -1090,10 +1308,38 @@ export default function App() {
                       );
                     })
                   )}
+                  {/* Ephemeral live-stream bubbles: replaced by the persisted
+                      message as soon as message:created lands. */}
+                  {Object.entries(streamingTurns).map(([instanceId, turn]) => (
+                    <div key={`stream-${instanceId}`} className="space-y-1">
+                      <div className="flex items-center gap-2 text-xs text-slate-400">
+                        <span className="font-semibold text-cyan-400">{turn.instanceName}</span>
+                        <span className="text-[10px] px-1.5 py-0.2 rounded font-mono border bg-cyan-950 text-cyan-400 border-cyan-800 animate-pulse">
+                          streaming
+                        </span>
+                      </div>
+                      <div className="p-3 rounded-lg text-sm whitespace-pre-wrap border bg-slate-950 border-cyan-900/60 text-slate-300">
+                        {turn.text}
+                        <span className="animate-pulse">▍</span>
+                      </div>
+                    </div>
+                  ))}
                 </div>
 
                 {/* Input form */}
                 <form onSubmit={handleSendMessage} className="p-3 border-t border-slate-800 bg-slate-900/60 flex gap-2">
+                  <select
+                    value={currentUserId ?? ''}
+                    onChange={(e) => handleSelectUser(e.target.value)}
+                    title="Sending as"
+                    className="bg-slate-950 border border-slate-800 rounded-lg px-2 py-2.5 text-sm text-slate-300 max-w-[140px]"
+                  >
+                    {users.map((u) => (
+                      <option key={u.id} value={u.id}>
+                        {u.avatar || '👤'} {u.displayName}
+                      </option>
+                    ))}
+                  </select>
                   <input
                     type="text"
                     value={chatInput}
@@ -1105,12 +1351,22 @@ export default function App() {
                     }
                     className="flex-1 bg-slate-950 border border-slate-800 rounded-lg px-4 py-2.5 text-sm focus:outline-none focus:border-cyan-500 text-slate-100"
                   />
-                  <button
-                    type="submit"
-                    className="bg-cyan-600 hover:bg-cyan-500 text-white px-5 py-2.5 rounded-lg text-sm font-medium flex items-center gap-2"
-                  >
-                    <Send className="w-4 h-4" /> Send
-                  </button>
+                  {(isSending || activeRunId !== null) ? (
+                    <button
+                      type="button"
+                      onClick={handleStopRun}
+                      className="bg-rose-600 hover:bg-rose-500 text-white px-5 py-2.5 rounded-lg text-sm font-medium flex items-center gap-2"
+                    >
+                      ■ Stop
+                    </button>
+                  ) : (
+                    <button
+                      type="submit"
+                      className="bg-cyan-600 hover:bg-cyan-500 text-white px-5 py-2.5 rounded-lg text-sm font-medium flex items-center gap-2"
+                    >
+                      <Send className="w-4 h-4" /> Send
+                    </button>
+                  )}
                 </form>
               </div>
             </div>
@@ -1437,7 +1693,14 @@ export default function App() {
                 </div>
               </div>
 
-              <div className="flex justify-end pt-2 border-t border-slate-800">
+              <div className="flex justify-between pt-2 border-t border-slate-800">
+                <button
+                  type="button"
+                  onClick={handleDeleteRoom}
+                  className="px-4 py-2 bg-rose-700 hover:bg-rose-600 rounded-lg text-white font-semibold flex items-center gap-1.5"
+                >
+                  <Trash2 className="w-3.5 h-3.5" /> Delete Room
+                </button>
                 <button
                   type="button"
                   onClick={() => setShowRoomSettingsModal(false)}

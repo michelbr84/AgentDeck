@@ -15,13 +15,14 @@
     "clean": "rm -rf dist"
   },
   "dependencies": {
-    "@agentdeck/protocol": "workspace:*",
-    "@agentdeck/security": "workspace:*",
-    "@agentdeck/database": "workspace:*",
     "@agentdeck/adapter-sdk": "workspace:*",
     "@agentdeck/adapters": "workspace:*",
-    "zod": "^3.24.2",
-    "@agentdeck/shared": "workspace:*"
+    "@agentdeck/database": "workspace:*",
+    "@agentdeck/protocol": "workspace:*",
+    "@agentdeck/security": "workspace:*",
+    "@agentdeck/shared": "workspace:*",
+    "yaml": "^2.9.0",
+    "zod": "^3.24.2"
   },
   "devDependencies": {
     "@types/node": "^22.13.0",
