@@ -293,6 +293,9 @@ export async function createAgentDeckServer(options?: ServerOptions): Promise<Ag
     const adapter = manager.getAdapter(id);
     if (!adapter) throw new Error(`Agent ${id} not found`);
     await adapter.install();
+    // What is installed just changed: make the next scan look the latest
+    // version up again instead of serving an answer cached up to an hour ago.
+    AgentDeckManager.invalidateVersionCache(adapter.definition.id);
     const detection = await adapter.detect();
     return redactSecrets({ ok: true, detection });
   });

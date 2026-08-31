@@ -49,7 +49,9 @@ export class AgentDeckManager {
     this.db = db;
     this.eventBus = eventBus || new EventBus();
     this.promptComposer = new PromptComposer();
-    this.upgradeEngine = new TransactionalUpgradeEngine(this.eventBus);
+    this.upgradeEngine = new TransactionalUpgradeEngine(this.eventBus, {
+      onInstallationChanged: (definitionId) => AgentDeckManager.invalidateVersionCache(definitionId),
+    });
     this.orchestrationEngine = new MultiAgentOrchestrationEngine(this);
 
     // Register built-in default adapters
@@ -104,12 +106,30 @@ export class AgentDeckManager {
     return Array.from(this.adapterRegistry.values());
   }
 
-  /**
-   * Scans system for all registered agent adapters, updates database state, and returns installations.
-   */
-  // TTL cache for version lookups (1 hour)
+  // TTL cache for "latest version" lookups, shared across manager instances.
+  // A successful lookup is good for an hour. An unknown answer — the adapter
+  // threw, or reported `latestVersion: null` — is kept only briefly: long
+  // enough not to hammer the network on every scan, short enough to recover.
+  // `isOutdated(v, null)` is always false, so remembering a failure for the
+  // full hour would pin every agent to "up to date" after one network blip.
   private static versionCache = new Map<string, { result: { latestVersion: string | null }; expiresAt: number }>();
-  private static VERSION_CACHE_TTL_MS = 60 * 60 * 1000; // 1 hour
+  public static readonly VERSION_CACHE_TTL_MS = 60 * 60 * 1000; // 1 hour
+  public static readonly VERSION_FAILURE_TTL_MS = 60 * 1000; // 1 minute
+
+  /**
+   * Drops the cached latest-version lookup for one adapter, or for all of them
+   * when no id is given, so the next scan fetches it again. Call after anything
+   * that changes what is installed (install, upgrade); otherwise
+   * `version_latest` and the outdated flag can lag the user's own action by up
+   * to an hour.
+   */
+  public static invalidateVersionCache(adapterId?: string): void {
+    if (adapterId === undefined) {
+      AgentDeckManager.versionCache.clear();
+    } else {
+      AgentDeckManager.versionCache.delete(adapterId);
+    }
+  }
 
   private async getCachedLatestVersion(adapter: AgentAdapter): Promise<{ latestVersion: string | null }> {
     const key = adapter.definition.id;
@@ -117,17 +137,23 @@ export class AgentDeckManager {
     if (cached && cached.expiresAt > Date.now()) {
       return cached.result;
     }
+    let result: { latestVersion: string | null };
     try {
-      const result = await adapter.getLatestVersion();
-      AgentDeckManager.versionCache.set(key, { result, expiresAt: Date.now() + AgentDeckManager.VERSION_CACHE_TTL_MS });
-      return result;
+      result = await adapter.getLatestVersion();
     } catch {
-      const fallback = { latestVersion: null };
-      AgentDeckManager.versionCache.set(key, { result: fallback, expiresAt: Date.now() + AgentDeckManager.VERSION_CACHE_TTL_MS });
-      return fallback;
+      result = { latestVersion: null };
     }
+    const ttl =
+      result.latestVersion === null
+        ? AgentDeckManager.VERSION_FAILURE_TTL_MS
+        : AgentDeckManager.VERSION_CACHE_TTL_MS;
+    AgentDeckManager.versionCache.set(key, { result, expiresAt: Date.now() + ttl });
+    return result;
   }
 
+  /**
+   * Scans system for all registered agent adapters, updates database state, and returns installations.
+   */
   public async scanAndSyncInstallations(): Promise<AgentInstallation[]> {
     const results: AgentInstallation[] = [];
 

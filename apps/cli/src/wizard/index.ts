@@ -53,6 +53,7 @@ export async function runSetupWizard(options?: SetupOptions): Promise<void> {
               installSpinner.text = `Installing ${adapter.definition.name}: ${stage} (${pct || 0}%)`;
             },
           });
+          AgentDeckManager.invalidateVersionCache(adapter.definition.id);
           installSpinner.succeed(`${adapter.definition.name} installed successfully!`);
         } catch (err) {
           installSpinner.fail(`Failed to install ${adapter.definition.name}: ${(err as Error).message}`);
