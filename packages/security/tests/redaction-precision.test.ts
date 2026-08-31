@@ -69,4 +69,50 @@ describe('redactSecrets — key precision', () => {
     expect(out.note).toContain('[REDACTED_SECRET]');
     expect(out.note).not.toContain('abcdefghijklmnopqrstuvwxyz');
   });
+
+  it('redacts GitHub fine-grained PATs (github_pat_...)', () => {
+    const out = redactSecrets({
+      note: 'push with github_pat_11AAAAAAA0aaaaaaaaaaaa_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa please',
+    }) as { note: string };
+    expect(out.note).toContain('[REDACTED_SECRET]');
+    expect(out.note).not.toContain('github_pat_11AAAAAAA');
+  });
+
+  it('redacts PEM private-key blocks, including labeled variants', () => {
+    const pem = [
+      '-----BEGIN RSA PRIVATE KEY-----',
+      'MIIEowIBAAKCAQEAfakefakefakefakefakefake',
+      'fakefakefakefakefakefakefakefakefakefake',
+      '-----END RSA PRIVATE KEY-----',
+    ].join('\n');
+    const out = redactSecrets({ note: `here is my key:\n${pem}\nthanks` }) as { note: string };
+    expect(out.note).toContain('[REDACTED_SECRET]');
+    expect(out.note).not.toContain('MIIEowIBAA');
+
+    const pkcs8 = '-----BEGIN PRIVATE KEY-----\nMC4CAQAfakefake\n-----END PRIVATE KEY-----';
+    const out2 = redactSecrets({ note: pkcs8 }) as { note: string };
+    expect(out2.note).toBe('[REDACTED_SECRET]');
+  });
+
+  it('keeps status-flavoured keys that merely mention secrets readable', () => {
+    const status = {
+      secretsConfigured: true,
+      secretStoreHealthy: 'ok',
+      configured: ['openrouter'],
+    };
+    expect(redactSecrets(status)).toEqual(status);
+  });
+
+  it('still redacts keys that hold secret material', () => {
+    const redacted = redactSecrets({
+      secret: 'x',
+      secrets: ['x'],
+      secretKey: 'x',
+      secret_key: 'x',
+      sharedSecret: 'x',
+    }) as Record<string, string>;
+    for (const [key, value] of Object.entries(redacted)) {
+      expect(value, `${key} must be redacted`).toBe('[REDACTED_SECRET]');
+    }
+  });
 });

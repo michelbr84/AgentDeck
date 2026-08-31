@@ -45,6 +45,6 @@ Welcome to the **AgentDeck** documentation. AgentDeck is a unified agent managem
 | `agentdeck tui` | Launch the full-screen terminal user interface (TUI) |
 | `agentdeck web` | Start the local REST/WebSocket daemon and open the Web Deck |
 | `agentdeck upgrade <agent>` | Safely upgrade an agent with automated pre-upgrade configuration backups |
-| `agentdeck doctor` | Run diagnostic Level 1 & Level 2 health checks across all agents |
+| `agentdeck doctor [agent]` | Run diagnostic Level 1 & Level 2 health checks across all agents, or a single one |
 | `agentdeck chat <room>` | Start an interactive CLI chat session in a room |
 | `agentdeck docs` | View built-in offline documentation directly in the terminal |

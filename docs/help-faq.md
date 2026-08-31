@@ -27,8 +27,8 @@ Starts the AgentDeck REST and WebSocket daemon and serves the web application.
 ### `agentdeck upgrade [agentId] [--dry-run]`
 Performs a safe, transactional upgrade of the specified agent, including pre-upgrade configuration backups and health verification.
 
-### `agentdeck doctor [--level <level>]`
-Runs diagnostic checks across all agents and prints detailed status reports (`level1_static` or `level2_connectivity`).
+### `agentdeck doctor [agentId] [--level <level>]`
+Runs diagnostic checks across all agents — or a single agent when `agentId` is given (e.g. `agentdeck doctor claude-code`) — and prints detailed status reports (`level1_static` or `level2_connectivity`).
 
 ### `agentdeck chat [roomId]`
 Opens an interactive group chat session inside your terminal.
