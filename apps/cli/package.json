@@ -20,7 +20,7 @@
     "@agentdeck/shared": "workspace:*",
     "@agentdeck/server": "workspace:*",
     "commander": "^15.0.0",
-    "@inquirer/prompts": "^7.3.2",
+    "@inquirer/prompts": "^8.7.2",
     "chalk": "^5.4.1",
     "ora": "^9.4.1",
     "ink": "^5.1.0",
