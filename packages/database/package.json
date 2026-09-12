@@ -18,7 +18,7 @@
     "@agentdeck/protocol": "workspace:*",
     "@agentdeck/security": "workspace:*",
     "better-sqlite3": "^11.8.1",
-    "kysely": "^0.27.5"
+    "kysely": "^0.28.17"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.12",
