@@ -10,7 +10,7 @@ jobs:
   lint-and-typecheck:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           # gitleaks-action resolves a pull request's range as
           # `<first commit>^..<head>`. With the default fetch-depth of 1 the
