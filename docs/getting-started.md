@@ -3,7 +3,7 @@
 ## System Requirements
 - **OS**: Ubuntu 20.04+, Debian 11+, macOS 12+, or Windows WSL2 (Ubuntu).
 - **Runtime**: Node.js 20 LTS or higher (`node -v`).
-- **Package Manager**: `npm` or `pnpm` (pnpm 9+ recommended for development).
+- **Package Manager (development)**: `pnpm` — the repo pins `pnpm@11.22.0` via the `packageManager` field (enable with `corepack enable`); the lockfile and CI expect it.
 
 ---
 
@@ -19,8 +19,8 @@ curl -fsSL https://raw.githubusercontent.com/michelbr84/AgentDeck/main/scripts/i
 This installer:
 1. Verifies your operating system and Node.js runtime.
 2. Creates the secure configuration directory tree (`~/.agentdeck/` with `0700` POSIX permissions).
-3. Installs the `@agentdeck/cli` package and exposes the `agentdeck` command in `$PATH`.
-4. Initializes the SQLite operational database (`~/.agentdeck/data/agentdeck.db`).
+3. Downloads the release tarballs (`agentdeck-cli.tar.gz`, `agentdeck-web.tar.gz`) from GitHub Releases, verifies their SHA-256 checksums, and exposes the `agentdeck` command in `$PATH`.
+4. Prepares the data directories under `~/.agentdeck/` — the SQLite operational database (`~/.agentdeck/data/agentdeck.db`) is created on first run.
 
 ---
 

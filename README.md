@@ -132,6 +132,7 @@ For inter-agent calls, `agentdeck agents link` registers `agentdeck mcp-server` 
 - `apps/cli`: Interactive CLI, Setup Wizard, `agents` provisioning commands, MCP server, and Ink Terminal UI (`agentdeck`).
 - `apps/web`: React + Vite + Tailwind CSS Web Deck.
 - `packages/core`: Core Orchestrator, State Machine Engine, Prompt Composer, Upgrade Engine, LLM Routing Service, Provider Catalog, Interop Guardrails.
+- `packages/server`: REST API + WebSocket daemon (Fastify), local request guard, and static Web Deck hosting.
 - `packages/protocol`: Shared typed schemas, Zod definitions, Event Envelopes.
 - `packages/database`: SQLite operational store in WAL mode with Kysely migrations.
 - `packages/security`: Secret redaction, per-provider secret store, token generation, constant-time verification.

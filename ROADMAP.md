@@ -6,6 +6,19 @@
 
 > This document contains business planning, not legal, tax, or financial advice. Entity, tax, and licensing questions should go to a qualified professional before money changes hands.
 
+> **Status addendum — 2026-09-12.** The audit in §2 describes the v1.0.4 baseline and is
+> preserved as written. Progress since: **v1.1.0** (tagged 2026-08-30) closed P0 gaps 1
+> (silent mock fallbacks), 3 (security triad), 4 (real cost/token accounting + cap
+> enforcement), 6 (dead tables wired) and most of 9 (apps/ under test); gap 8 (adapter
+> metadata rot) and much of the honest-docs pass (0.4) landed on `main` by 2026-08-31 and
+> are pending release (CHANGELOG `[Unreleased]`), together with unplanned scope: LLM
+> routing, the `agents` CLI, MCP agent-to-agent interop, and the Web Deck Control/Groups
+> pages. Much of Phase 1's differentiator is also on `main` pending release — live token
+> streaming, real coordinator plan/delegate phases, parallel panel broadcast, run abort,
+> and room deletion — while debate roles (1.4) and the demo/rename (1.7/1.8) remain open.
+> Still open from Phase 0: name selection (0.8 — deadline 2026-09-30) and the remaining
+> 0.4/0.7 tail. Verify claims against CHANGELOG.md before quoting this roadmap.
+
 ---
 
 ## Table of contents
