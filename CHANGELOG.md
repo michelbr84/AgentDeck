@@ -13,11 +13,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Web Deck**: Agent Control page (install status, primary/backup routing, API keys, apply/dry-run) and Groups builder page.
 - **REST**: `GET /api/v1/agents/llm`, `GET|PUT /api/v1/llm-routing`, `POST /api/v1/llm-routing/apply`, `GET|PUT /api/v1/instances/:id/llm-override`, `GET /api/v1/secrets/status`, `PUT /api/v1/secrets/:provider`, `POST /api/v1/providers/test`, `GET /api/v1/providers/catalog`, `POST /api/v1/agents/:id/install`.
 - **Database**: migration v3 adds the `llm_routing` table and `agent_instances.llm_override_json`.
+- **Room cap creation**: `createRoom` now accepts `maxTurnsPerRun`, `maxRuntimeSec`, and `maxCostUSD` parameters (previously hardcoded to 10/600/null).
 - **CI**: Gitleaks scans the full history (`fetch-depth: 0`); `.gitleaks.toml` allowlists the fake-credential test fixtures.
 - **Web Deck token sign-in**: the Web Deck now works with `agentdeck web --token <secret>` — every API call sends `Authorization: Bearer <token>`, a 401 opens an "Authentication Required" prompt to paste the token, and opening `http://127.0.0.1:4321/#token=<secret>` once signs the tab in (`?token=` is accepted too; the token is kept in that tab's `sessionStorage` and stripped from the URL — the fragment form never reaches the server or its logs). Previously every UI call got 401 in token mode.
 - **Tests are type-checked**: `pnpm typecheck` now also runs `tsc -p tsconfig.tests.json` over every `*.test.ts` (they were outside the `tsc -b` graph, which is how `new AgentDeckDatabase(<string>)` compiled); 16 stale fixtures were fixed on the way.
 
 ### Changed
+- **Runtime cap enforcement within turns**: `maxRuntimeSec` is now enforced not only at turn boundaries but also *within* turn execution — the adapter's abort signal fires when the remaining runtime budget is exhausted, interrupting long-running processes. `maxCostUSD` remains a turn-boundary check.
 - **GarraIA installer**: `install()` now runs the official installer (`https://garraia.org/install.sh`, prebuilt release asset with `.sha256` verification) instead of throwing. Supersedes the 1.1.0 "GarraIA repositioning" note; the experimental/dogfooding description stays.
 - **Hermes installer**: `install()` now runs the official NousResearch installer (`https://hermes-agent.nousresearch.com/install.sh`) instead of `git clone`. Supersedes the 1.1.0 "Hermes install URL" note.
 - **Web Deck**: the new Agent Control and Groups pages use `apiFetch` (HTTP error detection + safe JSON parsing) like the rest of the app.
@@ -45,8 +47,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - **Transport badges**: Messages now carry raw payload metadata (transport type, exit code, tokens, cost) visible in Web Deck and TUI.
 - **Real cost/token accounting**: Orchestration engine now uses actual adapter-reported usage instead of hardcoded estimates.
-- **Runtime cap enforcement**: `maxRuntimeSec` room setting is now enforced both at turn boundaries AND within turn execution — the adapter's abort signal fires when the remaining runtime budget is exhausted, interrupting long-running processes. `maxCostUSD` is enforced at turn boundaries.
-- **Room cap creation**: `createRoom` now accepts `maxTurnsPerRun`, `maxRuntimeSec`, and `maxCostUSD` parameters (previously hardcoded to 10/600/null).
+- **Cap enforcement**: `maxRuntimeSec` and `maxCostUSD` room settings are now enforced at turn boundaries with clear system messages.
 - **Persistence trio**: `orchestration_runs`, `audit_logs`, and `backups` tables are now wired with manager methods and REST endpoints (`GET /api/v1/runs`, `GET /api/v1/audit-logs`, `GET /api/v1/backups`).
 - **WebSocket authentication**: `/ws` endpoint now requires authentication via `Authorization: Bearer` header or `?token=` query parameter when `--token` is set.
 - **CORS hardening**: Localhost CORS check now uses exact regex matching to prevent `http://localhost.evil.com` bypass.

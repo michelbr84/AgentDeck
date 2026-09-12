@@ -132,6 +132,7 @@ Para chamadas entre agentes, `agentdeck agents link` registra o `agentdeck mcp-s
 - `apps/cli`: CLI interativa, Assistente de Onboarding, comandos de provisionamento `agents`, servidor MCP e TUI em Ink (`agentdeck`).
 - `apps/web`: Interface Web moderna em React, Vite e Tailwind CSS.
 - `packages/core`: Orquestrador central, motor de estados, compositor de prompts, motor de upgrade, serviço de roteamento de LLM, catálogo de provedores e guardrails de interoperabilidade.
+- `packages/server`: API REST + daemon WebSocket (Fastify), guarda de requisições locais e hospedagem estática do Web Deck.
 - `packages/protocol`: Esquemas tipados em Zod, eventos e contratos de dados.
 - `packages/database`: Banco de dados operacional SQLite (modo WAL) com migrações Kysely.
 - `packages/security`: Redação de segredos, cofre de segredos por provedor, gerador de tokens e validação segura.

@@ -1,0 +1,69 @@
+name: Bug report
+description: Report a problem with AgentDeck
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to file a bug! A few notes before you start:
+
+        - **Security issues** should go through [private vulnerability reporting](https://github.com/michelbr84/AgentDeck/security/advisories/new) instead (see [SECURITY.md](../../blob/main/SECURITY.md)) — please do not report them here.
+        - **Never paste real API keys or tokens** in this report. AgentDeck redacts secrets in its own logs, but double-check before pasting.
+  - type: input
+    id: version
+    attributes:
+      label: AgentDeck version
+      description: Output of `agentdeck --version` (or the commit hash if running from source)
+      placeholder: v1.1.0
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - CLI / setup wizard
+        - TUI
+        - Web Deck
+        - Agents (`agents setup` / `status` / `rollback` / `link`)
+        - LLM routing / providers
+        - MCP server / agent-to-agent interop
+        - Plugin system
+        - Installation
+        - Other
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options:
+        - Ubuntu
+        - Debian
+        - Other Linux
+        - macOS
+        - Windows WSL2
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Run `agentdeck ...`
+        2. ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected vs actual behavior
+      description: What did you expect to happen, and what happened instead?
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs / output
+      description: Redact API keys and tokens before pasting.
+      render: shell
