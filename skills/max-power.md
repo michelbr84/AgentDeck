@@ -1,0 +1,270 @@
+---
+name: max-power
+description: One-command activation — installs ClaudeMaxPower, offers Superpowers plugin install, presents capabilities menu, and routes the user to the right skill for their immediate goal.
+disable-model-invocation: true
+arguments:
+  - name: goal
+    description: What you want to accomplish right now (free text; the skill picks the best entry point)
+    required: false
+  - name: mode
+    description: "new-project | existing-project | auto (default: auto)"
+    required: false
+  - name: install-superpowers-plugin
+    description: "yes | no | ask (default: ask)"
+    required: false
+allowed-tools:
+  - Bash
+  - Read
+  - Edit
+  - Write
+  - Glob
+  - Grep
+  - Agent
+  - TaskCreate
+  - TaskUpdate
+---
+
+# Skill: max-power
+
+One-command activation for the full ClaudeMaxPower stack. Detects the environment, installs
+what's missing, offers the optional Superpowers plugin, wires up the skills pipeline, and
+routes the user to the right entry point for their immediate goal.
+
+This is the intended first command in any new shell. If `/max-power` runs cleanly, the full
+engineering pipeline (brainstorming -> plan -> subagent-driven dev -> review -> finish) is
+live and every governance hook is active.
+
+## Announce
+
+Print exactly:
+
+```
+Activating ClaudeMaxPower at maximum capability.
+```
+
+Then proceed through the steps below. Do not skip steps. If any step fails, report the
+failure clearly and continue with the next step where possible.
+
+## Step 1 — Detect environment
+
+Run each check and record the result. Prefer non-interactive shell commands.
+
+### 1.1 Git repository?
+
+```bash
+git rev-parse --is-inside-work-tree 2>/dev/null
+```
+
+Record `IS_GIT=yes|no`. If no, warn the user — many skills (worktrees, branch
+finishing, fix-issue, review-pr) require git.
+
+### 1.2 ClaudeMaxPower already installed?
+
+Run the shared detector — it checks three install markers (hook script, assemble-team skill,
+CMP-tagged CLAUDE.md) and prints `yes` or `no`:
+
+```bash
+CMP_INSTALLED="$(bash skills/references/detect-cmp-installation.sh .)"
+```
+
+### 1.3 New or existing project?
+
+Run the shared classifier — it applies the file-count + README + source-tree heuristic
+and prints `new` or `existing`:
+
+```bash
+PROJECT_KIND="$(bash skills/references/detect-project-kind.sh .)"
+```
+
+The `mode` argument overrides detection. If `mode=new-project` or `mode=existing-project`,
+use that value. Otherwise use the detection result.
+
+### 1.4 Detect tech stack
+
+Run the shared detector — same probes as `/assemble-team` uses, so results are consistent:
+
+```bash
+TECH_STACK="$(bash skills/references/detect-stack.sh .)"
+```
+
+Output is comma-separated (`node,python,go`...) or `none`. Used later to tailor pre-commit
+checks and test runners.
+
+## Step 2 — Install ClaudeMaxPower (only if not present)
+
+Skip this step entirely if `CMP_INSTALLED=yes`.
+
+If install is needed, **read `skills/references/max-power-install-strategies.md`** for the
+full decision tree (in-place vs subdirectory vs abort) and the exact `rsync`/`git clone`/
+`curl | tar` commands. Apply the strategy matched by the current directory state and the
+user's choice. Do not inline the install steps here — the reference file is the source of
+truth.
+
+## Step 3 — Offer the Superpowers plugin (optional)
+
+Tell the user:
+
+```
+ClaudeMaxPower routes the core Superpowers methodology through the official
+plugin — brainstorming, writing-plans, subagent-driven-development, TDD,
+systematic-debugging, worktrees, and branch finishing all live under the
+/superpowers:* namespace once the plugin is installed. Legacy unqualified
+names (/brainstorming, /tdd-loop, ...) are caught by /superpowers-redirect
+and pointed at the canonical replacement.
+
+The official Superpowers plugin adds extra skills too (frontend-design,
+mcp-builder, writing-clearly-and-concisely, elements-of-style, and more).
+It is optional but recommended — the unified pipeline expects it.
+```
+
+Decision logic:
+
+- If `install-superpowers-plugin=yes`: tell the user to run the slash command themselves
+  (this skill cannot execute slash commands). Provide exact copy-paste text:
+
+  ```
+  /plugin install superpowers@claude-plugins-official
+  ```
+
+- If `install-superpowers-plugin=no`: skip silently.
+- If `ask` or unset: prompt the user with a one-line question. Default to no.
+
+## Step 4 — Run setup script
+
+Run the project bootstrap if it exists:
+
+```bash
+if [ -f scripts/setup.sh ]; then
+  bash scripts/setup.sh
+fi
+```
+
+Capture missing-tool warnings from setup output and surface them:
+
+- `gh` not installed -> `/fix-issue` and `/review-pr` cannot talk to GitHub
+- `gh` not authenticated -> same; setup prints `gh auth login`
+- `jq` not installed -> batch workflows degrade gracefully
+- `graphviz` not installed -> `workflows/dependency-graph.sh` needs it
+- `python3`/`venv` missing -> example-app tooling (pytest) is unavailable; setup prints
+  the package to install and continues
+- `.env` placeholders still unfilled -> warn
+
+Do not fail hard on missing tools. Warn and continue.
+
+## Step 5 — Activate skills pipeline
+
+Load project context so downstream skills have everything they need.
+
+- Read `CLAUDE.md` if present. Note project identity, conventions, absolute rules.
+- Read `README.md` if present. Note goals and usage.
+- Read manifests for installed tech stacks: `package.json`, `pyproject.toml`,
+  `requirements.txt`, `go.mod`, `Cargo.toml`.
+- Run `git status --short` and `git log --oneline -n 10` to understand active work.
+- If `.estado.md` exists, read it — the session-start hook writes session summaries there.
+
+Keep the summary in working memory for Step 7 status dashboard. Do not print raw file
+contents unless the user asks.
+
+## Step 6 — Route to the immediate goal
+
+### 6.1 If a `goal` argument was provided, classify it
+
+Run the shared router — it does the keyword-table lookup deterministically and prints the
+matched skill plus a one-line rationale:
+
+```bash
+bash skills/references/route-goal.sh "$GOAL"
+```
+
+Exit codes:
+
+- `0` — one route matched. Stdout is `<skill>\t<rationale>`. Tell the user the exact
+  command to run, prefixed with the rationale. Do not execute the downstream skill
+  yourself.
+- `1` — multiple routes matched. Stdout lists each candidate. Ask the user which one they
+  meant before routing.
+- `3` — nothing matched. Fall through to Step 6.2 (show the menu).
+
+Example output when one route matches:
+
+```
+Route: /superpowers:brainstorming user-auth
+Why: Feature/build language — brainstorming is the hard gate before any new code.
+Install the Superpowers plugin first with
+/plugin install superpowers@claude-plugins-official if it's not already active.
+```
+
+### 6.2 If no goal was provided, show the menu
+
+Print this menu verbatim:
+
+```
+Claude Code + ClaudeMaxPower is active at maximum capability.
+
+Recommended pipeline (Superpowers methodology, install with /plugin install superpowers@claude-plugins-official):
+  1) /superpowers:brainstorming <topic>                  Design the feature (spec gate)
+  2) /superpowers:writing-plans <spec-file>              Break spec into tasks
+  3) /superpowers:subagent-driven-development <plan>     Execute via fresh subagents + 2-stage review
+  4) /superpowers:finishing-a-development-branch         Merge / PR / cleanup
+
+Native ClaudeMaxPower entry points:
+  /assemble-team --mode new-project --description "..."
+  /fix-issue --issue <N> --repo owner/repo
+  /review-pr --pr <N> --repo owner/repo
+  /refactor-module --file <path> --goal "..."
+  /generate-docs --dir src/
+  /gen-commit-message
+  /superpowers-redirect            (when you type an old /brainstorming-style command)
+
+Governance hooks (auto-fire, no invocation needed):
+  - session-start hook       context restore (reads .estado.md)
+  - pre-tool-use hook        blocks dangerous commands
+  - pre-commit-check hook    secret/debug/large-file/linter scan before git commit
+  - post-tool-use hook       auto-run tests on edit
+  - stop hook                persist .estado.md
+
+What's your goal? (free text or pick a number above)
+```
+
+## Step 7 — Status dashboard
+
+Render the dashboard template at `skills/references/max-power-status-dashboard.md`,
+substituting the values you detected in Steps 1–6. The template lives in a reference file
+so the field list and skill/hook inventories can be updated independently of this skill.
+
+## Error handling summary
+
+- `git clone` fails -> try tarball fallback (`curl | tar -xz`). If both fail, stop and ask
+  the user to download manually.
+- `rsync` not available -> fall back to `cp -n -R` (no-clobber).
+- `setup.sh` missing a tool -> warn, continue, note it in the status dashboard under
+  Environment.
+- Project files already exist and strategy is in-place -> always use `--ignore-existing` /
+  `-n` so user files are never overwritten. If a collision would happen, list the colliding
+  paths and skip them.
+- User declines install in Step 2 -> stop cleanly. Do not leave partial state.
+- `goal` argument is ambiguous (matches multiple intents) -> ask once for clarification,
+  then route.
+
+## Cross-references
+
+- Hooks: [`docs/hooks-guide.md`](../docs/hooks-guide.md)
+- Skills: [`docs/skills-guide.md`](../docs/skills-guide.md)
+- Agents: [`docs/agents-guide.md`](../docs/agents-guide.md)
+- Agent teams: [`docs/agent-teams-guide.md`](../docs/agent-teams-guide.md)
+- Batch workflows: [`docs/batch-workflows.md`](../docs/batch-workflows.md)
+
+## Success criteria
+
+`/max-power` has succeeded when all of the following are true:
+
+- ClaudeMaxPower files are present (hooks, skills, scripts)
+- `.claude/settings.json` has `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1` (agent teams live)
+- The session-start hook has run at least once this session (context restored)
+- The user has a clear next action — either a routed skill invocation or the menu
+- The status dashboard was printed
+
+If any criterion fails, report which one and what to do about it.
+
+**Feedback:** Did `/max-power` land you on the right next step? Reply with a 1–10 rating,
+what slowed you down, or a faster path from where you started to where you ended.
