@@ -995,7 +995,7 @@ export class MultiAgentOrchestrationEngine {
       }
 
       const rawError = (err as Error).message;
-      let sanitizedReason = 'Agent execution failed.';
+      let sanitizedReason: string;
       if (abortReason instanceof TurnTimeoutError) {
         sanitizedReason = `Turn exceeded its ${Math.round(timeoutMs / 1000)}s timeout.`;
       } else if (rawError.includes('not found') || rawError.includes('ENOENT')) {

@@ -643,7 +643,7 @@ export class GarraIAAdapter implements AgentAdapter, LlmConfigurable {
       // garra.ask.v1 envelope: { answer: "...", response: "...", content: "...", text: "...", reply: "..." }
       parsedContent = jsonRes.answer || jsonRes.response || jsonRes.content || jsonRes.text || jsonRes.reply || (typeof jsonRes === 'string' ? jsonRes : '');
     } catch {
-      parsedContent = stdoutClean;
+      // not JSON — parsedContent falls back to raw stdout
     }
 
     if (!parsedContent && !stdoutClean) {

@@ -143,7 +143,7 @@ export class ClineAdapter implements AgentAdapter {
       await fs.access(configPath);
       hasConfig = true;
     } catch {
-      hasConfig = false;
+      // config file absent — hasConfig stays false
     }
 
     return {

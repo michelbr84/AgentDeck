@@ -174,7 +174,7 @@ export class ClaudeCodeAdapter implements AgentAdapter, LlmConfigurable {
       await fs.access(claudeJson);
       hasConfig = true;
     } catch {
-      hasConfig = false;
+      // config file absent — hasConfig stays false
     }
 
     return {

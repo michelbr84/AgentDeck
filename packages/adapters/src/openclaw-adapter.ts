@@ -177,7 +177,7 @@ export class OpenClawAdapter implements AgentAdapter, LlmConfigurable {
       await fs.access(configPath);
       hasConfig = true;
     } catch {
-      hasConfig = false;
+      // config file absent — hasConfig stays false
     }
 
     return {
@@ -636,7 +636,7 @@ export class OpenClawAdapter implements AgentAdapter, LlmConfigurable {
       // OpenClaw json response envelope: { reply, message, text, content, response }
       parsedContent = jsonRes.reply || jsonRes.message || jsonRes.text || jsonRes.content || jsonRes.response || (typeof jsonRes === 'string' ? jsonRes : '');
     } catch {
-      parsedContent = stdoutClean;
+      // not JSON — parsedContent falls back to raw stdout
     }
 
     if (!parsedContent && !stdoutClean) {

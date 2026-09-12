@@ -201,7 +201,8 @@ export class RoutingService {
         } catch (err) {
           throw new Error(
             `Aborting: could not back up ${adapter.definition.name} (${(err as Error).message}). ` +
-              'Nothing was changed.'
+              'Nothing was changed.',
+          { cause: err }
           );
         }
       }
@@ -219,7 +220,8 @@ export class RoutingService {
         } catch (err) {
           throw new Error(
             `Aborting before any write: ${adapter.definition.name} would fail ` +
-              `(${(err as Error).message}). Nothing was changed.`
+              `(${(err as Error).message}). Nothing was changed.`,
+          { cause: err }
           );
         }
       }
