@@ -176,7 +176,7 @@ export class HermesAdapter implements AgentAdapter, LlmConfigurable {
       await fs.access(hermesDir);
       hasConfig = true;
     } catch {
-      hasConfig = false;
+      // config file absent — hasConfig stays false
     }
 
     return {

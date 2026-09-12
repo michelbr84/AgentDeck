@@ -114,7 +114,7 @@ export class TransactionalUpgradeEngine {
       skippedFiles: [],
       timestamp: new Date().toISOString(),
     };
-    let rolledBack = false;
+    let rolledBack: boolean;
 
     try {
       // Step 1: Pre-upgrade Snapshot

@@ -126,7 +126,7 @@ async function configurePersonaForAgent(
     default: `${definitionId.charAt(0).toUpperCase() + definitionId.slice(1)} Assistant`,
   });
 
-  let personaId = '';
+  let personaId: string;
 
   if (configChoice === 'existing') {
     personaId = await select({

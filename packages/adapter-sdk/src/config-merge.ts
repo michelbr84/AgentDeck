@@ -73,7 +73,8 @@ export async function readJsonConfig(file: string): Promise<Record<string, unkno
     // Refusing beats silently replacing a config we failed to understand.
     throw new Error(
       `${file} is not valid JSON (${(err as Error).message}); refusing to overwrite it. ` +
-        'Fix or move the file and re-run.'
+        'Fix or move the file and re-run.',
+          { cause: err }
     );
   }
 }

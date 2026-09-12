@@ -137,7 +137,7 @@ export class PromptComposer {
     // 8. Trigger Message
     layers.push({
       id: `layer-${order}`,
-      order: order++,
+      order: order,
       layerName: 'Trigger Message',
       source: 'User Input',
       content: options.triggerMessage.trim(),
