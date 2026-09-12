@@ -1,0 +1,125 @@
+---
+name: fix-issue
+description: Fix a GitHub issue end-to-end — reads the issue, reproduces the bug with a test, fixes the code, and opens a PR.
+disable-model-invocation: true
+arguments:
+  - name: issue
+    description: GitHub issue number
+    required: true
+  - name: repo
+    description: "Repository in owner/repo format (default: $DEFAULT_REPO from .env)"
+    required: false
+allowed-tools:
+  - Bash
+  - Read
+  - Edit
+  - Write
+  - Glob
+  - Grep
+---
+
+# Skill: fix-issue
+
+Fix a GitHub issue from start to finish, following TDD principles.
+
+## Arguments
+
+- `--issue <number>` — GitHub issue number to fix (required)
+- `--repo <owner/repo>` — target repository (optional, defaults to `$DEFAULT_REPO` from `.env`)
+
+## Workflow
+
+### Step 1: Load environment and gate on required arguments
+
+Run the shared resolver — it loads `.env` safely (no `xargs`-based word-splitting) and
+resolves `REPO` from `$REPO -> $DEFAULT_REPO`:
+
+```bash
+eval "$(bash skills/references/load-env-and-resolve-repo.sh)"
+```
+
+If `REPO` is still empty after the eval, **stop and ask the user** (use AskUserQuestion if
+available, or prompt directly): "Which repository should I target? Format: `owner/repo`."
+Do not proceed past Step 1 with an empty `REPO`.
+
+If `ISSUE` is missing entirely, ask the user for the issue number before continuing.
+
+### Step 2: Read the issue
+```bash
+gh issue view $ISSUE --repo $REPO
+```
+Read the full issue body, comments, and labels. Understand:
+- What the expected behavior is
+- What the actual (broken) behavior is
+- Any reproduction steps provided
+
+### Step 3: Identify affected code
+Use Grep and Glob to locate files related to the issue. Look for:
+- Function names mentioned in the issue
+- File paths referenced in the error
+- Related test files
+
+Once you have a likely source file, list its conventional test-file candidates with the
+shared finder (used by `/refactor-module` too — same convention, same output):
+
+```bash
+bash skills/references/find-test-file.sh "$AFFECTED_SRC" || true
+```
+
+If no existing test file is found, you'll create one in Step 4 at the first candidate
+location the script would have printed.
+
+### Step 4: Write a failing test (TDD first)
+Before touching any implementation:
+1. Find the relevant test file (or create one if none exists)
+2. Write a test that fails with the current broken behavior
+3. Run the tests and confirm the new test is RED. Use the shared runner — it
+   stack-detects via `detect-stack.sh` and picks the right command, so this
+   works on Python and Node projects without hardcoding either:
+```bash
+bash skills/references/run-tests.sh "$TEST_FILE" "test_<relevant_name>"
+```
+
+### Step 5: Fix the bug
+Now read the implementation file and apply the minimal fix that makes the failing test pass.
+Do not refactor unrelated code. Do not change existing tests.
+
+### Step 6: Verify all tests are green
+```bash
+bash skills/references/run-tests.sh
+```
+If any tests fail (including pre-existing ones), fix them before proceeding.
+
+### Step 7: Create a feature branch and PR
+```bash
+git checkout -b fix/issue-$ISSUE
+git add <files you changed>   # stage the files explicitly — interactive `git add -p` hangs without a TTY
+git commit -m "fix: resolve issue #$ISSUE — <short description>
+
+Closes #$ISSUE"
+git push origin fix/issue-$ISSUE
+gh pr create \
+  --repo $REPO \
+  --title "fix: <short description> (closes #$ISSUE)" \
+  --body "## What
+<explain the fix>
+
+## Why
+<explain the root cause>
+
+## Testing
+- Added test: \`test_<name>\`
+- All existing tests pass
+
+Closes #$ISSUE"
+```
+
+### Step 8: Report
+Tell the user:
+- The root cause of the bug
+- The test added
+- The fix applied
+- The PR URL
+
+**Feedback:** Did this skill do what you needed? Reply with a 1–10 rating, what slowed you
+down, or a faster path from where you started to where you ended.

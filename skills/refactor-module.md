@@ -1,0 +1,106 @@
+---
+name: refactor-module
+description: Safely refactor a module — captures a test baseline first, applies the refactor, then verifies all tests still pass.
+arguments:
+  - name: file
+    description: Path to the file to refactor
+    required: true
+  - name: goal
+    description: Description of the refactoring goal (e.g. "extract validation logic into a separate function")
+    required: true
+allowed-tools:
+  - Bash
+  - Read
+  - Edit
+  - Write
+  - Glob
+  - Grep
+---
+
+# Skill: refactor-module
+
+Safely refactor a module with test-backed confidence. Never leaves tests in a worse state.
+
+## Arguments
+
+- `--file <path>` — file to refactor (required)
+- `--goal <description>` — what to achieve with this refactor (required)
+
+## Workflow
+
+### Step 1: Read the file
+Read the full implementation file. Understand:
+- Public API (functions, classes, exports)
+- Internal structure and dependencies
+- Any TODOs or known issues
+
+### Step 2: Find and read the test file
+
+Run the shared test-file finder — it knows the conventional paths for Python, TS/JS, Go,
+Rust, and Ruby and prints each existing candidate in priority order:
+
+```bash
+TEST_FILES="$(bash skills/references/find-test-file.sh "$FILE")" || TEST_FILES=""
+```
+
+If `$TEST_FILES` is empty (script exited 1), stop and tell the user. A refactor without
+tests is risky. If multiple candidates exist, prefer the first line (priority order in the
+script reflects project conventions).
+
+### Step 3: Capture test baseline
+
+Use the shared runner so the same command works for Python and Node projects
+(internally it stack-detects via `detect-stack.sh`):
+
+```bash
+BASELINE_RESULTS="$(mktemp)"
+bash skills/references/run-tests.sh "$TEST_FILE" 2>&1 | tee "$BASELINE_RESULTS"
+```
+
+Record `$BASELINE_RESULTS` — a unique mktemp path avoids collisions between
+concurrent refactors or a stale `/tmp` file. If Step 6 produces different
+results, diff the two captures to explain the change.
+
+Record:
+- Total tests: X passed, Y failed (note: Y should be 0 before refactoring)
+- Test names
+
+If tests are already failing before refactoring, stop and tell the user. Fix existing failures first.
+
+### Step 4: Plan the refactor
+Based on `--goal`, identify:
+- What changes are needed (extract function, rename, split class, etc.)
+- What should NOT change (public API, behavior, test assertions)
+- Order of changes to minimize breakage
+
+### Step 5: Apply the refactor
+Make targeted changes using the Edit tool. Prefer:
+- Small, incremental edits
+- Rename in all call sites (use Grep to find all usages)
+- Keep public API intact unless the goal explicitly requires changing it
+
+### Step 6: Run tests after refactor
+```bash
+bash skills/references/run-tests.sh "$TEST_FILE"
+```
+
+If any tests fail:
+1. Read the failure output carefully
+2. Determine if it's a refactor error or a legitimate issue uncovered
+3. Fix the refactor error (not the test)
+4. Re-run until green
+
+### Step 7: Update documentation if needed
+If the refactor changed any public API:
+- Update docstrings in the implementation
+- Update any relevant docs/ pages
+
+### Step 8: Report
+Tell the user:
+- What was refactored
+- What changed in the public API (if anything)
+- Final test results (before vs. after comparison)
+- Any issues discovered during refactoring
+
+**Feedback:** Did this skill do what you needed? Reply with a 1–10 rating, what slowed you
+down, or a faster path from where you started to where you ended.

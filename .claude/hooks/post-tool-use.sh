@@ -1,0 +1,114 @@
+#!/usr/bin/env bash
+# Hook: PostToolUse (Edit, Write tools)
+# Fires after every file edit or write.
+# Purpose: Automated quality gate — run tests after code changes.
+#
+# Claude Code passes the file path via CLAUDE_TOOL_OUTPUT_FILE_PATH env var.
+
+set -euo pipefail
+
+# Force non-interactive pagers — avoid subprocess hangs on minimal environments
+# (Git Bash without `less`, lean containers, CI runners). Every nested
+# git/npm/pytest invocation below inherits these. Use `${VAR:-default}` so
+# users who set their own pager are respected.
+export GIT_PAGER="${GIT_PAGER:-cat}"
+export PAGER="${PAGER:-cat}"
+export LESS="${LESS:-}"
+
+GREEN='\033[0;32m'
+RED='\033[0;31m'
+YELLOW='\033[1;33m'
+NC='\033[0m'
+
+FILE_PATH="${CLAUDE_TOOL_OUTPUT_FILE_PATH:-}"
+
+if [ -z "$FILE_PATH" ]; then
+  exit 0
+fi
+
+# Only act on source files (skip docs, configs, markdown)
+case "$FILE_PATH" in
+  *.py)
+    ;;
+  *.js|*.ts|*.jsx|*.tsx)
+    ;;
+  *)
+    exit 0
+    ;;
+esac
+
+echo ""
+echo "[post-tool-use] File changed: $FILE_PATH"
+
+# ── PYTHON ───────────────────────────────────────────────────────────────────
+if [[ "$FILE_PATH" == *.py ]]; then
+  # Find the nearest tests/ directory
+  DIR=$(dirname "$FILE_PATH")
+  TEST_DIR=""
+
+  # Search upward for tests/ directory (max 3 levels)
+  for _ in 1 2 3; do
+    if [ -d "$DIR/tests" ]; then
+      TEST_DIR="$DIR/tests"
+      break
+    fi
+    DIR=$(dirname "$DIR")
+  done
+
+  if [ -n "$TEST_DIR" ] && [ -d "$TEST_DIR" ]; then
+    # Prefer the project's virtualenv when one exists near the tests. The
+    # system python often lacks the project's dependencies (e.g. the seeded
+    # examples/todo-app/.venv), which would report bogus failures here.
+    PY="python3"
+    PROJ="$(cd "$TEST_DIR/.." && pwd)"
+    for _ in 1 2 3; do
+      if [ -x "$PROJ/.venv/bin/python" ]; then
+        PY="$PROJ/.venv/bin/python"
+        break
+      fi
+      if [ -x "$PROJ/.venv/Scripts/python.exe" ]; then
+        PY="$PROJ/.venv/Scripts/python.exe"
+        break
+      fi
+      PROJ=$(dirname "$PROJ")
+    done
+    echo "Running tests: $PY -m pytest $TEST_DIR -q --tb=short"
+    if "$PY" -m pytest "$TEST_DIR" -q --tb=short 2>&1; then
+      echo -e "${GREEN}[PASS]${NC} All tests passed."
+    else
+      echo -e "${RED}[FAIL]${NC} Tests failed after editing $FILE_PATH"
+      echo "Fix the failing tests before proceeding."
+    fi
+  else
+    echo -e "${YELLOW}[SKIP]${NC} No tests/ directory found near $FILE_PATH"
+  fi
+fi
+
+# ── JAVASCRIPT / TYPESCRIPT ───────────────────────────────────────────────────
+if [[ "$FILE_PATH" == *.js || "$FILE_PATH" == *.ts || "$FILE_PATH" == *.jsx || "$FILE_PATH" == *.tsx ]]; then
+  # Find the nearest package.json
+  DIR=$(dirname "$FILE_PATH")
+  PKG=""
+
+  for _ in 1 2 3; do
+    if [ -f "$DIR/package.json" ]; then
+      PKG="$DIR/package.json"
+      break
+    fi
+    DIR=$(dirname "$DIR")
+  done
+
+  if [ -n "$PKG" ]; then
+    echo "Running: npm test --if-present (in $(dirname "$PKG"))"
+    cd "$(dirname "$PKG")"
+    if npm test --if-present 2>&1; then
+      echo -e "${GREEN}[PASS]${NC} All tests passed."
+    else
+      echo -e "${RED}[FAIL]${NC} Tests failed after editing $FILE_PATH"
+    fi
+  else
+    echo -e "${YELLOW}[SKIP]${NC} No package.json found near $FILE_PATH"
+  fi
+fi
+
+echo ""
