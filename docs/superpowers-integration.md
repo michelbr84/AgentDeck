@@ -1,0 +1,357 @@
+# Superpowers Integration
+
+How ClaudeMaxPower incorporates the obra/superpowers methodology into a unified, coordinated
+engineering pipeline.
+
+## 1. Introduction
+
+[Superpowers](https://github.com/obra/superpowers) is an open-source project by Jesse Vincent
+and contributors that codifies a rigorous software-engineering methodology for Claude Code. It
+provides a set of skills (brainstorming, planning, TDD, subagent-driven development, systematic
+debugging, worktree workflows, and branch finishing) that collectively enforce a disciplined
+approach to building software with an AI collaborator. With over 157k stars on GitHub at the
+time of this writing, it has become a reference point for structured Claude workflows.
+
+ClaudeMaxPower is a GitHub template that turns Claude Code into a coordinated AI engineering
+team. It ships with hooks (session-start, pre-tool-use, pre-commit-check, post-tool-use, stop),
+a skill library (`/fix-issue`, `/review-pr`, `/refactor-module`, `/gen-commit-message`,
+`/generate-docs`), specialized agents (`code-reviewer`, `security-auditor`, `doc-writer`,
+`team-coordinator`), and Agent Teams (`/assemble-team`) with two operating modes: new-project
+and existing-project.
+
+The two projects merge naturally. Superpowers contributes a methodology — how work flows from
+idea to merged branch, with gates at each stage. ClaudeMaxPower contributes infrastructure —
+hooks, team orchestration, and batch workflows. Integrating them gives a single template that
+enforces rigorous practice while automating the mechanical work around it.
+
+The integration approach is to adapt and inline the relevant Superpowers skills directly into
+the ClaudeMaxPower repository. This keeps the template self-contained (no submodules, no
+external fetches during setup) while attributing the source. Each adapted skill carries an
+attribution header, and `ATTRIBUTION.md` in the repository root is the single source of truth
+for licensing.
+
+## 2. The Unified Pipeline
+
+The combined pipeline looks like this:
+
+```
+Idea
+  |
+  v
+/superpowers:brainstorming  ---------->  spec
+  |                                       |
+  |                                       v
+  |                                  /superpowers:writing-plans  ---------->  plan
+  |                                                                            |
+  |                                                                            v
+  |                                                            +---------------+---------------+
+  |                                                            |                               |
+  |                                                            v                               v
+  |                                          /superpowers:subagent-driven-development   /assemble-team
+  |                                          (with /superpowers:test-driven-development  (parallel agents,
+  |                                           and /superpowers:using-git-worktrees)       team review)
+  |                                                            |                               |
+  |                                                            +---------------+---------------+
+  |                                                                            |
+  |                                                                            v
+  |                                                       /superpowers:finishing-a-development-branch
+  |
+  |  (existing project entry points bypass brainstorming)
+  |
+  +-->  /fix-issue                                 (tracked bug)
+  +-->  /superpowers:systematic-debugging          (unknown bug)
+  +-->  /refactor-module                           (small refactor)
+  +-->  workflows/mass-refactor.sh                 (repo-wide change)
+  +-->  workflows/batch-fix.sh                     (independent issues, headless)
+```
+
+The `/superpowers:*` commands ship with the Superpowers plugin — install with
+`/plugin install superpowers@claude-plugins-official`. If you type a legacy
+unqualified name (`/brainstorming`, `/tdd-loop`, etc.) the local
+`/superpowers-redirect` skill catches it and points you at the canonical
+replacement.
+
+Each step:
+
+- **`/superpowers:brainstorming`** — Collaborative design conversation that produces an
+  approved spec. This is a hard gate: no implementation skill should run without a spec when
+  the work is non-trivial.
+- **`/superpowers:writing-plans`** — Turns an approved spec into a bite-sized task plan, with
+  each task sized for a single focused session.
+- **`/superpowers:subagent-driven-development`** — Spawns a fresh subagent for each task,
+  runs strict TDD, and enforces two-stage review (self-review then independent review) before
+  the task is marked complete.
+- **`/superpowers:test-driven-development`** — Strict test-driven development. Red, green,
+  refactor. No production code without a failing test first. Used inside
+  `/superpowers:subagent-driven-development` and callable directly.
+- **`/superpowers:using-git-worktrees`** — Sets up an isolated git worktree so subagents and
+  agent teams can edit files without conflicting with the main working directory.
+- **`/assemble-team`** — Alternate execution mode. Spawns a small team of specialized agents
+  (Architect, Implementer, Tester, Reviewer, Doc Writer) that work in parallel on a shared
+  task list.
+- **`/superpowers:finishing-a-development-branch`** — Decides what happens at the end: merge,
+  open a PR, keep the branch open, or discard. Verifies tests pass before anything lands.
+- **`/fix-issue`**, **`/superpowers:systematic-debugging`** — Entry points for existing
+  projects with tracked bugs or unexplained misbehavior.
+
+## 3. When to Use Which Execution Mode
+
+| Situation                                          | Recommended path                                                     |
+|----------------------------------------------------|----------------------------------------------------------------------|
+| Greenfield feature, uncertain requirements         | `/superpowers:brainstorming` then `/superpowers:writing-plans` then `/superpowers:subagent-driven-development` |
+| Greenfield feature, clear spec, want team pattern  | `/superpowers:brainstorming` then `/assemble-team`                   |
+| Existing bug in a tracked issue                    | `/fix-issue` (escalate to `/superpowers:systematic-debugging` if stuck) |
+| Existing unclear bug                               | `/superpowers:systematic-debugging` then `/superpowers:test-driven-development` for the regression test |
+| Refactor an existing module                        | `/refactor-module` for simple cases; `/superpowers:brainstorming` + `/superpowers:writing-plans` for architectural ones |
+| Mass changes across many files                     | `workflows/mass-refactor.sh`                                         |
+| Parallel independent fixes                         | `workflows/batch-fix.sh`                                             |
+
+The default path for new work is the full pipeline. Shortcuts exist for situations where the
+ceremony would add more friction than value — a typo fix does not need a brainstorming session.
+
+### Escalation paths
+
+Work often starts on a short path and escalates when it turns out to be harder than it
+looked. The common escalation patterns:
+
+- **`/fix-issue` escalates to `/superpowers:systematic-debugging`.** When a tracked issue's
+  described symptom does not match any obvious cause in the code, abandon the quick-fix
+  attempt and switch to the 4-phase root cause investigation.
+- **`/refactor-module` escalates to `/superpowers:brainstorming` + `/superpowers:writing-plans`.**
+  When the refactor goal turns out to require cross-module changes or affects public
+  contracts, stop and plan the work before continuing.
+- **`/superpowers:subagent-driven-development` escalates to `/assemble-team`.** When a
+  planned task turns out to span multiple disciplines (backend + frontend + docs), switch
+  from sequential subagents to a parallel team.
+- **Exploratory spike escalates to `/superpowers:test-driven-development`.** When a quick
+  prototype graduates to real code, switch to the strict TDD loop and retrofit any untested
+  behavior.
+
+Escalation is not failure. It is a signal that early estimates of the work's shape were
+optimistic, and the pipeline is designed to absorb that gracefully.
+
+## 4. `/superpowers:subagent-driven-development` vs `/assemble-team` vs Workflow Scripts
+
+All three approaches exist because each optimizes for a different axis. Pick based on the
+shape of the work.
+
+| Approach                                       | Isolation                  | Parallel  | Reviews              | Context cost | Best for                                      |
+|------------------------------------------------|----------------------------|-----------|----------------------|--------------|-----------------------------------------------|
+| `/superpowers:subagent-driven-development`     | worktree + fresh per task  | sequential| 2-stage per task     | Medium       | Independent tasks from an approved plan       |
+| `/assemble-team`                               | optional worktree          | parallel  | team review          | High         | Features requiring multiple specializations   |
+| `workflows/parallel-review.sh`                 | worktree                   | 2 sessions| post-hoc review      | Medium       | Writer/reviewer pattern on a single feature   |
+| `workflows/batch-fix.sh`                       | none (headless)            | serial    | none                 | Low          | Independent issues processed in bulk          |
+
+`/superpowers:subagent-driven-development` gives each task a clean context window — the
+subagent sees only its task and the code it needs, not the history of every prior task. This
+trades parallelism for focus and is the right choice when tasks are sequential by nature.
+
+`/assemble-team` trades context cost for parallelism. Specialized agents work at the same
+time, each with focused responsibilities. It shines when the feature spans multiple
+disciplines (architecture, implementation, tests, docs) and those can proceed concurrently.
+
+Workflow scripts (`parallel-review.sh`, `batch-fix.sh`, `mass-refactor.sh`) run Claude in
+headless mode (`claude --print`). They are the right choice for CI-friendly, repeatable,
+large-batch work where interactive refinement is not needed.
+
+## 5. `/superpowers:brainstorming` vs Jumping to `/assemble-team`
+
+`/superpowers:brainstorming` exists to resolve ambiguity before code is written. Use it when:
+
+- Requirements are unclear or under-specified.
+- Multiple reasonable approaches exist and the trade-offs need discussion.
+- UI/UX considerations matter and the shape of the output is not yet fixed.
+- Architecture decisions are involved (database schema, module boundaries, API contracts).
+
+Jump directly to `/assemble-team` when:
+
+- A spec already exists and is precise enough to implement from.
+- Requirements were produced by a stakeholder and are not up for negotiation.
+- The team structure you want (Architect + Implementer + Tester + Reviewer + Doc Writer) is
+  already the right shape for the work.
+
+For `/assemble-team --mode new-project`, the brainstorming gate is now enforced: a spec must
+exist before the team is assembled. If no spec is present, `/assemble-team` will direct you
+to `/superpowers:brainstorming` first. `--mode existing-project` does not enforce the gate,
+because the existing codebase itself serves as the specification of how things currently
+behave.
+
+## 6. The Iron Laws Merged
+
+Four non-negotiable rules that apply across the unified pipeline:
+
+1. **No production code without a failing test first.** Enforced by
+   `/superpowers:test-driven-development`. A test must be written, observed to fail for the
+   right reason, and only then is implementation code allowed. The "for the right reason"
+   clause matters — a test that fails because of a typo is not a red test.
+2. **No implementation without an approved spec.** Enforced by the `/superpowers:brainstorming`
+   gate. Non-trivial work requires a spec that names the problem, the chosen approach, and
+   the success criteria. Trivial work (one-line fixes, typos) is exempt.
+3. **No fixes without root cause investigation.** Enforced by
+   `/superpowers:systematic-debugging` Phase 1. Symptoms are not causes. A fix that makes the
+   symptom go away without explaining why the symptom appeared is provisional at best.
+4. **No merging with failing tests.** Enforced by
+   `/superpowers:finishing-a-development-branch` Step 1 (verify). The test suite runs green
+   before merge, PR, or any branch-finalizing action. If tests are failing, the branch is
+   not finished.
+
+These laws are cumulative. A change that passes tests (law 4) but skipped the spec (law 2) is
+still a violation. A change with a spec and passing tests but no root-cause analysis (law 3)
+is still a violation when it touches bug territory.
+
+### Exceptions and their limits
+
+There are legitimate exceptions to each law, but they are narrow:
+
+- **Law 1 exception:** Exploratory spikes that will be deleted before merging. Use a scratch
+  branch with informal testing. The moment the spike becomes real code, the law applies
+  retroactively — tests come before further production code.
+- **Law 2 exception:** Trivial changes (typos, obvious one-liners, formatting) do not need a
+  spec. A change is "trivial" when a reviewer would not ask "why?" about it.
+- **Law 3 exception:** Known flakes with documented workarounds can be patched without deep
+  root-cause investigation if the patch itself is well-isolated. But the underlying cause
+  stays on the backlog.
+- **Law 4 exception:** None. Failing tests block the merge. If a test is known-broken and
+  unrelated, it must be marked as skipped with a tracking issue, not ignored.
+
+These exceptions exist so the methodology does not become theater. If you find yourself
+using them on every change, the shape of the work has shifted and the pipeline should be
+reconsidered.
+
+### Verifying subagent reviews
+
+`/superpowers:subagent-driven-development` and `Agent(subagent_type=code-reviewer)` produce
+structured review output that *looks* authoritative. It is not. Treat reviewer output as a
+high-signal
+*hypothesis*, not a verdict. Verify each claim against the code before applying it.
+
+The canonical example: in an external effectiveness audit of this template, the
+dispatched code-reviewer caught a real TypeScript type-safety smell (valid finding,
+fix landed) but also reported a "logic bug" in `src/slug.ts` — a regex calculation it
+walked through incorrectly. Empirical re-reading of the code disproved the claim.
+Both findings came from the same review block, with the same confident tone.
+
+The rule that follows:
+
+- **Read the cited line.** A claim like "off-by-one in the truncation loop" only
+  matters if the loop actually has the off-by-one. Open the file at the cited line
+  and decide for yourself.
+- **Reproduce the alleged failure with a test.** If the reviewer says behaviour X
+  is wrong for input Y, write the test that asserts the correct behaviour. If the
+  test passes, the claim was wrong; if it fails, the fix is grounded.
+- **Distinguish style notes from correctness claims.** Style and naming critiques
+  are usually safe to apply on judgment alone. Correctness, performance, and
+  security claims need empirical confirmation.
+- **Resist the "it's-the-reviewer-so-it-must-be-right" reflex.** The whole point
+  of two-stage review is to surface signal — not to bypass your own judgment.
+
+This rule is itself an iron-law variant of law #3 (no fixes without root-cause
+investigation), applied to the special case where the "report" comes from another
+LLM session rather than a human bug report.
+
+## 7. Session State Handoff
+
+Across sessions, ClaudeMaxPower preserves state through two mechanisms:
+
+- **`.estado.md`** is written by the `stop` hook at the end of each session and read by the
+  `session-start` hook at the beginning of the next one. The session-start hook surfaces only
+  the three most recent entries to keep the loaded context small; older entries remain in the
+  file for reference.
+- **Claude Code's own auto-memory** (under the user-level memory directory) is the canonical
+  store for user, feedback, project, and reference memories. ClaudeMaxPower does not maintain
+  a separate memory store and does not run any background consolidation process — anything you
+  see described elsewhere as "Auto Dream" is unbuilt and has been retired from the docs.
+
+Superpowers methodology integrates with this in the obvious way: brainstorming outcomes land
+in `docs/specs/`, plans land in `docs/plans/`, the session summary that names them is written
+to `.estado.md`, and Claude Code's auto-memory captures durable user and project notes
+on its own schedule.
+
+## 8. Hook Interactions
+
+ClaudeMaxPower's hooks continue to work transparently when Superpowers skills run. Each hook
+plays a specific role in the unified pipeline:
+
+- **`pre-tool-use.sh`** — Logs every bash command to `.claude/audit.log` with a timestamp and
+  blocks dangerous patterns. This works transparently for
+  `/superpowers:subagent-driven-development` subagents — the subagent's commands are logged
+  alongside the main session's. Blocked patterns (fork bombs, `rm -rf /`, force-pushes to
+  main) are blocked no matter which skill triggered them.
+- **`post-tool-use.sh`** — Automatically runs tests after `Edit` or `Write` tool calls. This
+  reinforces TDD during `/superpowers:subagent-driven-development`: every code change
+  immediately triggers the test suite, and the subagent learns of breakage before moving to
+  the next step.
+- **`session-start.sh`** — Reads `.estado.md` to restore context from the previous session.
+  When a `/superpowers:brainstorming` session ends mid-spec, the pending spec file path is
+  captured in `.estado.md`, and the next session picks up where the previous left off.
+- **`stop.sh`** — Saves a session summary to `.estado.md`. Brainstorming decisions, approved
+  spec references, and partial plan progress are preserved across restarts.
+
+Hooks and skills are orthogonal layers. Hooks enforce guardrails on every action; skills
+organize multi-step workflows. Together they form the infrastructure on which Superpowers
+methodology runs.
+
+## 9. Pure Superpowers vs Pure ClaudeMaxPower vs Merged
+
+| Dimension                 | Pure Superpowers                          | Pure ClaudeMaxPower            | Merged (this repo)                                              |
+|---------------------------|-------------------------------------------|--------------------------------|-----------------------------------------------------------------|
+| Spec gate                 | Yes (`/superpowers:brainstorming`)        | No                             | Yes, enforced in new-project mode                               |
+| TDD rigor                 | Strict (iron law)                         | Optional                       | Strict (`/superpowers:test-driven-development`)                 |
+| Agent teams               | No                                        | Yes (`/assemble-team`)         | Yes, with brainstorming gate                                    |
+| Session-state handoff     | No                                        | Yes (`.estado.md`)             | Yes (`.estado.md` + Claude Code auto-memory)                    |
+| Hooks (session/pre/post/stop) | No                                    | Yes                            | Yes                                                             |
+| Worktrees                 | Yes (`/superpowers:using-git-worktrees`)  | Partial (`parallel-review.sh`) | Yes (`/superpowers:using-git-worktrees` + scripts)              |
+| Two-stage review          | Yes (`/superpowers:subagent-driven-development`) | No                      | Yes                                                             |
+| Systematic debugging      | Yes (4-phase)                             | No                             | Yes                                                             |
+| Branch finishing workflow | Yes (`/superpowers:finishing-a-development-branch`) | No                  | Yes                                                             |
+| Batch / headless workflows| No                                        | Yes (`workflows/*.sh`)         | Yes                                                             |
+| Specialized sub-agents    | No                                        | Yes (reviewer, auditor)        | Yes                                                             |
+| MCP integrations          | Community-driven                          | Not built-in                   | Not built-in (user configurable)                                |
+| Bootstrap command         | No                                        | `/max-power`                   | `/max-power`                                                    |
+
+The merged template is strictly more capable than either parent. Nothing was removed; the
+behavioral upgrade is that `/superpowers:test-driven-development` is strict by default.
+
+## 10. Migration Guide
+
+If you were using ClaudeMaxPower before this integration, here is what to expect:
+
+- **Existing skills are unchanged.** `/fix-issue`, `/review-pr`, `/refactor-module`,
+  `/generate-docs`, and `/assemble-team` behave as before, with one exception noted below.
+  The deterministic checks of the old `/pre-commit` skill now run automatically via
+  `.claude/hooks/pre-commit-check.sh`; the LLM portion lives in `/gen-commit-message`.
+- **`/superpowers:test-driven-development` is strict.** It enforces the iron law: no
+  production code without a failing test first.
+- **`/assemble-team` enforces a brainstorming gate in new-project mode.** If you invoke
+  `/assemble-team --mode new-project` without an approved spec, the skill will direct you to
+  `/superpowers:brainstorming` first. Existing-project mode is unchanged.
+- **Methodology skills live upstream.** `/superpowers:brainstorming`,
+  `/superpowers:writing-plans`, `/superpowers:subagent-driven-development`,
+  `/superpowers:systematic-debugging`, `/superpowers:finishing-a-development-branch`, and
+  `/superpowers:using-git-worktrees` ship with the Superpowers plugin — install with
+  `/plugin install superpowers@claude-plugins-official`.
+- **Hooks, agents, and workflow scripts are unchanged.** Your existing
+  `.claude/settings.json`, `.claude/agents/`, and `workflows/` remain compatible.
+
+No manual migration steps are required. Pull the new version of the template and existing
+work continues to function.
+
+## 11. Attribution and License
+
+Superpowers is MIT-licensed. The adapted skill files in this repository carry an attribution
+header that names the upstream skill and its license. `ATTRIBUTION.md` at the repository root
+is the single source of truth for third-party content and licensing — consult it when in
+doubt. ClaudeMaxPower itself is also MIT-licensed, and any derivative work that keeps the
+adapted skills intact inherits the attribution requirement automatically.
+
+## 12. References
+
+- obra/superpowers — [https://github.com/obra/superpowers](https://github.com/obra/superpowers)
+- ClaudeMaxPower — [https://github.com/michelbr84/ClaudeMaxPower](https://github.com/michelbr84/ClaudeMaxPower)
+- Hooks guide — `docs/hooks-guide.md`
+- Skills guide — `docs/skills-guide.md`
+- Agents guide — `docs/agents-guide.md`
+- Agent Teams guide — `docs/agent-teams-guide.md`
+- Batch workflows — `docs/batch-workflows.md`
+- Individual skill files in `skills/`
+- Attribution and license — `ATTRIBUTION.md`
