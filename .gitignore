@@ -1,10 +1,13 @@
 # Dependencies
 node_modules/
 .pnpm-store/
+.venv/
 dist/
 build/
 coverage/
 .turbo/
+__pycache__/
+*.py[cod]
 
 # Environment and Secrets (Defense in depth)
 .env
@@ -32,6 +35,10 @@ service-account*.json
 *.sqlite
 *.sqlite3
 
+# Session state and local Claude Code settings (hooks / Claude Code write these — local only)
+.estado*.md
+.claude/settings.local.json
+
 # Logs
 logs/
 *.log
@@ -54,6 +61,7 @@ Thumbs.db
 test-results/
 playwright-report/
 blob-report/
+.pytest_cache/
 *.tsbuildinfo
 dist-release/
 Multi-Agent-Organizer.md
