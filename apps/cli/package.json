@@ -21,7 +21,7 @@
     "@agentdeck/server": "workspace:*",
     "commander": "^15.0.0",
     "@inquirer/prompts": "^8.7.2",
-    "chalk": "^5.4.1",
+    "chalk": "^6.0.0",
     "ora": "^9.4.1",
     "ink": "^5.1.0",
     "ink-select-input": "^6.0.0",
